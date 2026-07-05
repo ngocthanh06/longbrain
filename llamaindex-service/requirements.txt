@@ -1,0 +1,30 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+
+llama-index-core==0.12.10
+llama-index-vector-stores-qdrant==0.4.2
+
+# Embedding providers (fastembed is the zero-config default).
+# fastembed is pinned EXACTLY: its pooling behaviour changed between minor
+# versions, and any drift would silently shift the vector space between
+# rebuilds. Bump only together with a re-embed migration.
+llama-index-embeddings-fastembed==0.3.5
+fastembed==0.7.4
+llama-index-embeddings-ollama==0.5.0
+llama-index-embeddings-openai>=0.3,<0.4
+llama-index-embeddings-nvidia>=0.3,<0.4
+
+# LLM providers (all optional at runtime, selected via LLM_PROVIDER)
+llama-index-llms-ollama==0.5.0
+llama-index-llms-anthropic>=0.6,<0.8
+llama-index-llms-openai>=0.3,<0.5
+llama-index-llms-openai-like>=0.3,<0.5   # NVIDIA NIM & mọi endpoint OpenAI-compatible
+llama-index-llms-gemini>=0.4,<0.6
+
+qdrant-client==1.12.1
+pypdf==5.1.0
+
+# MCP over Streamable HTTP (mounted at /mcp)
+mcp>=1.9,<2

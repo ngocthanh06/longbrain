@@ -1,0 +1,22 @@
+# --- Secrets — .env holds real API keys (NVIDIA/Google/...), never commit ---
+.env
+
+# --- Runtime data ---
+backups/
+logs/
+qdrant_storage/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# --- macOS / editors ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- Docker leftovers ---
+*.log

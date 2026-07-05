@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hermes.memory-backup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/scripts/backup.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <!-- Máy ngủ qua 2:00 -> launchd tự chạy bù khi thức dậy. Máy TẮT hẳn ->
+         job bị bỏ qua, nên RunAtLoad chạy thêm một lần mỗi khi đăng nhập/bật
+         máy; retention 7 bản nên không lo rác. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/backup.log</string>
+</dict>
+</plist>

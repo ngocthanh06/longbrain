@@ -1,0 +1,183 @@
+# Hermes Agent — Long-term Memory Stack (LlamaIndex + Qdrant)
+
+> 🇻🇳 Bản tiếng Việt: [README.vi.md](README.vi.md)
+
+A Docker-packaged memory backend for Hermes Desktop: each user runs their own
+independent stack — all data and memory stay private on their machine. By
+default it needs **no API key, no Ollama, and no Python on the host**.
+
+## Architecture
+
+```
+Hermes Desktop (host — the chat LLM runs here)
+   │  pre_llm_call  ──► auto-inject relevant memory into every turn
+   │  post_llm_call ──► auto-record every turn (tagged with sidebar project)
+   │  on_session_end ─► auto-distill finished sessions into long-term facts
+   │  on_session_start ► catch-up sweep for missed sessions on Desktop open
+   │  MCP (Streamable HTTP) ──► http://localhost:8800/mcp
+   ▼
+LlamaIndex service (Docker, 127.0.0.1:8800)
+   ├── L1 Working memory   — ChatMemoryBuffer rebuilt per session
+   ├── L2 Episodic memory  — hermes_chat_history (every turn, searchable
+   │                          semantically and per session)
+   ├── L3 Semantic memory  — hermes_memories (facts/preferences/decisions/
+   │                          tasks distilled by consolidation, with
+   │                          dedup/supersede)
+   ├── L4 Knowledge base   — hermes_documents (document RAG)
+   ├── Embedding: fastembed (local ONNX, baked into the image)
+   └── LLM (for consolidation): none | anthropic | openai | nvidia | gemini | ollama
+   ▼
+Qdrant (Docker, 127.0.0.1:6333) — named volume `qdrant_data`
+```
+
+The memory lifecycle is **fully automatic**: record → auto-recall →
+consolidate → controlled forgetting (`forget_about` tool) → nightly backup
+(2:00 AM, 7 kept).
+
+## Install (3 steps)
+
+1. Install [Docker Desktop](https://docs.docker.com/get-docker/).
+2. Install Hermes Desktop.
+3. In this directory run:
+
+```bash
+./setup.sh
+```
+
+**No manual steps remain.** The script does everything: creates `.env` →
+builds & starts containers → waits for health → registers all 4 hooks +
+consent into `~/.hermes/` → patches Hermes' `serve` bug (Desktop never
+registers shell hooks without it) → borrows an available API key
+(NVIDIA/Gemini) for auto-consolidation → installs the nightly backup job →
+adds memory-routing guidance to `~/.hermes/SOUL.md` (explicit "remember/
+forget" commands go to this stack, not Hermes' small built-in store) →
+restarts Hermes Desktop. Safe to re-run any number of times (idempotent).
+
+Verify after a few chats: `curl localhost:8800/health` — `last_written_at`
+must advance after every turn.
+
+## Provider configuration (.env)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `EMBED_PROVIDER` | `fastembed` | `fastembed` \| `ollama` \| `openai` \| `nvidia` |
+| `EMBED_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Embedding model (multilingual, CPU) |
+| `LLM_PROVIDER` | `none`* | `none` \| `anthropic` \| `openai` \| `nvidia` \| `gemini` \| `ollama` |
+| `LLM_MODEL` | per provider | e.g. `models/gemini-2.5-flash`, `claude-sonnet-5` |
+| `*_API_KEY` | — | `ANTHROPIC` / `OPENAI` / `NVIDIA` / `GOOGLE` — setup.sh borrows an existing key from `~/.hermes/.env` when the provider is `none` |
+| `HERMES_USER_ID` | `local` | Stamped into every payload (future multi-user server = no migration) |
+
+- **The LLM is freely swappable** — it is only used for consolidation and
+  `/chat`. With `none`, Hermes' own model handles consolidation through the
+  `consolidate_session` MCP tool.
+- **The embedding is a one-time choice** — changing it changes the vector
+  space. The service records model + dimension in a meta collection and
+  **refuses to boot** on a mismatch. To really switch: backup →
+  `docker compose down -v` → edit `.env` → re-ingest, or re-embed into new
+  collections.
+- Local Ollama (optional): `docker compose --profile ollama up -d`, then set
+  `LLM_PROVIDER=ollama` and `OLLAMA_BASE_URL=http://ollama:11434`.
+
+## MCP tools (registered at `http://localhost:8800/mcp`)
+
+| Tool | Purpose |
+|---|---|
+| `memory_recall(query, session_id?, project?)` | Combine relevant memory (facts + related past chats + recent turns) into one context block |
+| `memory_append(session_id, user_message, assistant_response)` | Record one turn (idempotent) |
+| `consolidate_session(session_id)` | Distill a session into facts (server-side with an LLM, otherwise returns transcript + instructions for Hermes' model) |
+| `save_memories(facts, session_id?, project?)` | Save distilled facts (auto dedup/supersede) |
+| `search_history(query, top_k?, project?)` | Semantic search across all past conversations |
+| `list_memories(project?)` | List stored facts (with ids) |
+| `forget_about(query)` → `forget_memory(id)` | Controlled forgetting: list candidates first, delete by id |
+| `forget_session(session_id)` | Delete one session's entire stored history |
+| `forget_everything(confirm="DELETE ALL")` | Full memory reset — requires the exact confirmation string |
+| `list_sessions()` / `list_projects()` | List stored sessions / projects |
+| `search_knowledge_base(query, top_k?, project?)` | Search ingested documents |
+| `add_to_knowledge_base(text, source?, project?)` | Add text to the knowledge base |
+
+Tools accept `project` (a Hermes sidebar project slug) to scope searches.
+
+## REST API
+
+```bash
+# Status + is memory being written? (last_written_at)
+curl localhost:8800/health
+
+# Ingest documents
+curl -X POST localhost:8800/ingest/text -H 'Content-Type: application/json' \
+  -d '{"text": "Content...", "metadata": {"source": "faq.md"}}'
+curl -X POST localhost:8800/ingest/file -F "file=@document.pdf"
+
+# Query the knowledge base
+curl -X POST localhost:8800/query -H 'Content-Type: application/json' \
+  -d '{"query": "..."}'
+
+# Memory
+curl -X POST localhost:8800/memory/append -H 'Content-Type: application/json' \
+  -d '{"session_id": "s1", "user_message": "...", "assistant_response": "..."}'
+curl -X POST localhost:8800/memory/recall -H 'Content-Type: application/json' \
+  -d '{"query": "which vector db does the project use?", "session_id": "s1"}'
+curl -X POST localhost:8800/memory/consolidate -H 'Content-Type: application/json' \
+  -d '{"session_id": "s1"}'          # needs LLM_PROVIDER != none
+curl -X POST localhost:8800/memory/search -H 'Content-Type: application/json' \
+  -d '{"query": "..."}'
+curl "localhost:8800/memory/facts?project=erp"      # list facts
+curl -X DELETE localhost:8800/memory/facts/<id>     # forget one fact
+curl -X DELETE "localhost:8800/memory/all?confirm=DELETE%20ALL"  # full reset
+
+# Sessions & projects
+curl localhost:8800/sessions
+curl localhost:8800/sessions/s1/history
+curl -X DELETE localhost:8800/sessions/s1
+curl localhost:8800/projects
+```
+
+## Per-project memory
+
+Memory is automatically partitioned by **Hermes Desktop sidebar project**:
+the hook reads the chat's working directory (`cwd`) → looks it up in
+`~/.hermes/projects.db` → stamps `project_id` on every record. Recall boosts
+same-project memories (×1.5) while cross-project knowledge can still surface
+when genuinely relevant; documents are hard-filtered by project. Creating a
+new project in the sidebar just works — zero configuration.
+Details: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Backup
+
+Runs automatically at **2:00 AM daily** (launchd; also once at every
+boot/login via `RunAtLoad` in case the machine was powered off; 7 newest kept;
+log at `logs/backup.log`) — installed by setup.sh. Manual run:
+
+```bash
+./scripts/backup.sh    # snapshots every hermes_* collection into ./backups/
+```
+
+## Repository layout
+
+```
+hermes-agent/
+├── setup.sh                 # one-command install (Docker + automatic Hermes wiring)
+├── docker-compose.yml       # qdrant + llamaindex (+ optional ollama profile)
+├── .env.example
+├── ARCHITECTURE.md          # detailed architecture (Vietnamese)
+├── UPGRADE_PLAN.md          # roadmap + progress (Vietnamese)
+├── hooks/
+│   ├── post_llm_call.py     # record each turn (tagged with sidebar project)
+│   ├── pre_llm_call.py      # auto-inject memory into every turn
+│   ├── on_session_end.py    # trigger consolidation when a session ends
+│   └── on_session_start.py  # catch-up sweep when Desktop opens
+├── scripts/
+│   ├── configure_hermes.py  # auto-wire Hermes (hooks + consent + serve patch + key + backup)
+│   └── backup.sh            # Qdrant snapshots (called nightly by launchd)
+└── llamaindex-service/      # memory service (FastAPI + LlamaIndex + MCP)
+```
+
+## Operational notes
+
+- **After every Hermes update: re-run `./setup.sh`** — updates overwrite the
+  `serve` patch (without it the Desktop backend never registers hooks).
+- **After editing any file in `hooks/`: re-run `./setup.sh`** — hook consent
+  is tied to the script's mtime.
+- **To delete memory, tell Hermes ("forget about X") or use the API** —
+  avoid deleting in the Qdrant dashboard: it has unconfirmed full write
+  access and makes it look like the system "lost data" on its own.

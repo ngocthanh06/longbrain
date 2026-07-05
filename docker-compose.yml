@@ -1,0 +1,81 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: hermes-qdrant
+    restart: unless-stopped
+    ports:
+      # Bind localhost-only: Qdrant không có auth, mở 0.0.0.0 là cả LAN
+      # đọc/xoá được memory (dashboard cũng cho phép drop collection).
+      - "127.0.0.1:6333:6333"   # REST API + dashboard
+      - "127.0.0.1:6334:6334"   # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  llamaindex:
+    build:
+      context: ./llamaindex-service
+      args:
+        EMBED_PROVIDER: "${EMBED_PROVIDER:-fastembed}"
+        EMBED_MODEL: "${EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+    container_name: hermes-llamaindex
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8800:8000"   # localhost-only; keep 8000 free for Hermes' own hindsight memory server
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+      EMBED_PROVIDER: "${EMBED_PROVIDER:-fastembed}"
+      EMBED_MODEL: "${EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-none}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      NVIDIA_API_KEY: "${NVIDIA_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      CONSOLIDATION_ENABLED: "${CONSOLIDATION_ENABLED:-true}"
+      CONSOLIDATION_INTERVAL: "${CONSOLIDATION_INTERVAL:-0}"
+      CONSOLIDATION_SWEEP_DEBOUNCE: "${CONSOLIDATION_SWEEP_DEBOUNCE:-600}"
+      CONSOLIDATION_IDLE_SECONDS: "${CONSOLIDATION_IDLE_SECONDS:-900}"
+      CONSOLIDATION_MIN_TURNS: "${CONSOLIDATION_MIN_TURNS:-2}"
+      CONSOLIDATION_MAX_FACTS: "${CONSOLIDATION_MAX_FACTS:-5}"
+      CONSOLIDATION_MIN_IMPORTANCE: "${CONSOLIDATION_MIN_IMPORTANCE:-0.5}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      HERMES_USER_ID: "${HERMES_USER_ID:-local}"
+      DOCUMENTS_COLLECTION: "${DOCUMENTS_COLLECTION:-hermes_documents}"
+      CHAT_HISTORY_COLLECTION: "${CHAT_HISTORY_COLLECTION:-hermes_chat_history}"
+      MEMORIES_COLLECTION: "${MEMORIES_COLLECTION:-hermes_memories}"
+      CHAT_MEMORY_TOKEN_LIMIT: "${CHAT_MEMORY_TOKEN_LIMIT:-3000}"
+    volumes:
+      - hermes_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # Optional local LLM — only started with: docker compose --profile ollama up -d
+  # Then set LLM_PROVIDER=ollama and OLLAMA_BASE_URL=http://ollama:11434 in .env.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: hermes-ollama
+    restart: unless-stopped
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  qdrant_data:
+  hermes_data:
+  ollama_data:
