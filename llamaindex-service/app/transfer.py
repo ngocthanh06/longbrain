@@ -81,6 +81,8 @@ def export_bundle(client: QdrantClient) -> dict:
         }
         if pl.get("superseded_by"):
             fact["superseded_by"] = str(pl["superseded_by"])
+        if pl.get("source_agent"):
+            fact["source_agent"] = pl["source_agent"]
         facts.append(fact)
     facts.sort(key=lambda f: f["created_at"] or 0)
 
@@ -89,14 +91,17 @@ def export_bundle(client: QdrantClient) -> dict:
         pl = p.payload or {}
         if not (pl.get("content") or "").strip() or not pl.get("session_id"):
             continue
-        turns.append({
+        turn = {
             "session_id": pl["session_id"],
             "role": pl.get("role", "user"),
             "content": pl["content"],
             "project_id": pl.get("project_id") or config.DEFAULT_PROJECT,
             "timestamp": pl.get("timestamp"),
             "consolidated": bool(pl.get("consolidated", True)),
-        })
+        }
+        if pl.get("source_agent"):
+            turn["source_agent"] = pl["source_agent"]
+        turns.append(turn)
     turns.sort(key=lambda t: (t["session_id"], t["timestamp"] or 0))
 
     docs = _export_documents(client)
@@ -192,6 +197,8 @@ def _import_facts(client: QdrantClient, embed_model, facts: list[dict]) -> dict:
         }
         if f.get("superseded_by"):
             payload["superseded_by"] = str(f["superseded_by"])
+        if f.get("source_agent"):
+            payload["source_agent"] = str(f["source_agent"])
         client.upsert(
             collection_name=config.MEMORIES_COLLECTION,
             points=[qmodels.PointStruct(
@@ -221,22 +228,25 @@ def _import_turns(client: QdrantClient, embed_model, turns: list[dict]) -> dict:
     for point_id, t in rows.items():
         if point_id in existing:
             continue
+        payload = {
+            "user_id": config.USER_ID,
+            "session_id": t["session_id"],
+            "project_id": t.get("project_id") or config.DEFAULT_PROJECT,
+            "role": t.get("role") or "user",
+            "content": t["content"],
+            "timestamp": t.get("timestamp") or time.time(),
+            # default True: imported history must never retrigger
+            # consolidation sweeps on the new machine
+            "consolidated": bool(t.get("consolidated", True)),
+        }
+        if t.get("source_agent"):
+            payload["source_agent"] = str(t["source_agent"])
         client.upsert(
             collection_name=config.CHAT_HISTORY_COLLECTION,
             points=[qmodels.PointStruct(
                 id=point_id,
                 vector=embed_model.get_text_embedding(t["content"]),
-                payload={
-                    "user_id": config.USER_ID,
-                    "session_id": t["session_id"],
-                    "project_id": t.get("project_id") or config.DEFAULT_PROJECT,
-                    "role": t.get("role") or "user",
-                    "content": t["content"],
-                    "timestamp": t.get("timestamp") or time.time(),
-                    # default True: imported history must never retrigger
-                    # consolidation sweeps on the new machine
-                    "consolidated": bool(t.get("consolidated", True)),
-                },
+                payload=payload,
             )],
         )
         imported += 1

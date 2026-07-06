@@ -49,11 +49,23 @@ for i in $(seq 1 60); do
 done
 
 # 5. Wire Hermes Desktop automatically (config + hook consent + serve patch + restart)
-step "Configuring Hermes Desktop automatically"
-chmod +x hooks/post_llm_call.py 2>/dev/null || true
 HERMES_PY="$HOME/.hermes/hermes-agent/venv/bin/python"
 [ -x "$HERMES_PY" ] || HERMES_PY="python3"
-"$HERMES_PY" scripts/configure_hermes.py
+if [ -d "$HOME/.hermes" ]; then
+  step "Configuring Hermes Desktop automatically"
+  chmod +x hooks/post_llm_call.py 2>/dev/null || true
+  "$HERMES_PY" scripts/configure_hermes.py
+else
+  step "Hermes Desktop not found (~/.hermes missing) — skipping its wiring"
+fi
+
+# 5b. Wire Claude Code, if installed (hooks + MCP; works on login, no API key)
+if command -v claude >/dev/null 2>&1; then
+  step "Configuring Claude Code automatically"
+  python3 scripts/configure_claude.py
+else
+  step "Claude Code not found — skipping (install it and re-run ./setup.sh to wire it)"
+fi
 
 # 6. Verify
 step "Verifying"

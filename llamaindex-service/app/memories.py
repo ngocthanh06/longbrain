@@ -45,6 +45,7 @@ def save_facts(
     user_id: str = config.USER_ID,
     session_id: str = "",
     project_id: str = config.DEFAULT_PROJECT,
+    source_agent: str = "",
 ) -> list[dict]:
     results = []
     for fact in facts:
@@ -85,23 +86,20 @@ def save_facts(
                 superseded.append(hit.payload.get("text", ""))
 
         now = time.time()
+        payload = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id or config.DEFAULT_PROJECT,
+            "type": ftype,
+            "text": text,
+            "importance": importance,
+            "created_at": now,
+        }
+        if source_agent:
+            payload["source_agent"] = source_agent
         client.upsert(
             collection_name=config.MEMORIES_COLLECTION,
-            points=[
-                qmodels.PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload={
-                        "user_id": user_id,
-                        "session_id": session_id,
-                        "project_id": project_id or config.DEFAULT_PROJECT,
-                        "type": ftype,
-                        "text": text,
-                        "importance": importance,
-                        "created_at": now,
-                    },
-                )
-            ],
+            points=[qmodels.PointStruct(id=point_id, vector=vector, payload=payload)],
         )
         results.append(
             {"text": text, "status": "supersedes" if superseded else "new",
@@ -189,6 +187,7 @@ def list_facts(
             "importance": p.payload.get("importance", 0.5),
             "created_at": p.payload.get("created_at"),
             "superseded_by": p.payload.get("superseded_by"),
+            "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points
     ]
@@ -325,6 +324,7 @@ def graph_data(
             "created_at": p.payload.get("created_at"),
             "session_id": p.payload.get("session_id") or "",
             "superseded": bool(p.payload.get("superseded_by")),
+            "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points
     ]

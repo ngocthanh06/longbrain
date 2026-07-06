@@ -129,8 +129,11 @@ def consolidate_session(
 
     facts = extract_with_llm(llm, transcript_from_points(points))
     project_id = points[0].payload.get("project_id") or config.DEFAULT_PROJECT
+    # Sessions are single-agent, so the first turn's provenance covers all.
+    source_agent = points[0].payload.get("source_agent") or ""
     saved = memories.save_facts(
-        client, embed_model, facts, user_id, session_id, project_id=project_id
+        client, embed_model, facts, user_id, session_id, project_id=project_id,
+        source_agent=source_agent,
     )
     memory_store.mark_consolidated(client, [p.id for p in points])
     return {"status": "ok", "turns_processed": len(points), "project": project_id, "facts": saved}

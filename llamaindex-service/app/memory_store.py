@@ -42,26 +42,24 @@ def add_message(
     content: str,
     user_id: str = config.USER_ID,
     project_id: str = config.DEFAULT_PROJECT,
+    source_agent: str = "",
 ) -> str:
     vector = embed_model.get_text_embedding(content)
     point_id = message_point_id(user_id, session_id, role, content)
+    payload = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "project_id": project_id or config.DEFAULT_PROJECT,
+        "role": role,
+        "content": content,
+        "timestamp": time.time(),
+        "consolidated": False,
+    }
+    if source_agent:
+        payload["source_agent"] = source_agent
     client.upsert(
         collection_name=config.CHAT_HISTORY_COLLECTION,
-        points=[
-            qmodels.PointStruct(
-                id=point_id,
-                vector=vector,
-                payload={
-                    "user_id": user_id,
-                    "session_id": session_id,
-                    "project_id": project_id or config.DEFAULT_PROJECT,
-                    "role": role,
-                    "content": content,
-                    "timestamp": time.time(),
-                    "consolidated": False,
-                },
-            )
-        ],
+        points=[qmodels.PointStruct(id=point_id, vector=vector, payload=payload)],
     )
     qdrant_setup.touch_meta(client)
     return point_id

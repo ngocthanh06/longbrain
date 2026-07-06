@@ -103,6 +103,7 @@ class MemoryAppendRequest(BaseModel):
     assistant_response: str = ""
     project_id: str = config.DEFAULT_PROJECT  # hook resolves from Hermes sidebar via cwd
     project_source: str = ""  # "folder" | "active" | "default" — how the hook resolved it
+    source_agent: str = ""  # "hermes" | "claude-code" | … — which agent produced the turn
 
 
 class RecallRequest(BaseModel):
@@ -245,13 +246,13 @@ def memory_append(payload: MemoryAppendRequest):
     if payload.user_message.strip():
         memory_store.add_message(
             client, embed, payload.session_id, "user", payload.user_message,
-            project_id=project_id,
+            project_id=project_id, source_agent=payload.source_agent,
         )
         appended += 1
     if payload.assistant_response.strip():
         memory_store.add_message(
             client, embed, payload.session_id, "assistant", payload.assistant_response,
-            project_id=project_id,
+            project_id=project_id, source_agent=payload.source_agent,
         )
         appended += 1
     meta = qdrant_setup.get_meta(client) or {}

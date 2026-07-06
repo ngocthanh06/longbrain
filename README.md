@@ -2,20 +2,23 @@
 
 > 🇻🇳 Bản tiếng Việt: [README.vi.md](README.vi.md)
 
-A Docker-packaged memory backend for Hermes Desktop: each user runs their own
+A Docker-packaged "long brain" for AI agents: each user runs their own
 independent stack — all data and memory stay private on their machine. By
 default it needs **no API key, no Ollama, and no Python on the host**.
+Two agent adapters ship today — **Hermes Desktop** and **Claude Code** —
+and they can run **in parallel against the same memory** (what you teach
+one agent, the other recalls; records carry a `source_agent` tag).
 
 ## Architecture
 
 ```
-Hermes Desktop (host — the chat LLM runs here)
-   │  pre_llm_call  ──► auto-inject relevant memory into every turn
-   │  post_llm_call ──► auto-record every turn (tagged with sidebar project)
-   │  on_session_end ─► auto-distill finished sessions into long-term facts
-   │  on_session_start ► catch-up sweep for missed sessions on Desktop open
-   │  MCP (Streamable HTTP) ──► http://localhost:8800/mcp
-   ▼
+Hermes Desktop (host)                Claude Code (host)
+   │ pre_llm_call   ► auto-inject      │ UserPromptSubmit ► auto-inject
+   │ post_llm_call  ► auto-record      │ Stop             ► auto-record
+   │ on_session_end ► auto-distill     │ SessionEnd       ► auto-distill
+   │ on_session_start ► catch-up       │ SessionStart     ► catch-up
+   │  MCP (Streamable HTTP) ──► http://localhost:8800/mcp ◄── MCP
+   ▼                                   ▼
 LlamaIndex service (Docker, 127.0.0.1:8800)
    ├── L1 Working memory   — ChatMemoryBuffer rebuilt per session
    ├── L2 Episodic memory  — hermes_chat_history (every turn, searchable
@@ -37,7 +40,7 @@ consolidate → controlled forgetting (`forget_about` tool) → nightly backup
 ## Install (3 steps)
 
 1. Install [Docker Desktop](https://docs.docker.com/get-docker/).
-2. Install Hermes Desktop.
+2. Install Hermes Desktop and/or Claude Code — whichever agents you use.
 3. In this directory run:
 
 ```bash
@@ -45,16 +48,38 @@ consolidate → controlled forgetting (`forget_about` tool) → nightly backup
 ```
 
 **No manual steps remain.** The script does everything: creates `.env` →
-builds & starts containers → waits for health → registers all 4 hooks +
-consent into `~/.hermes/` → patches Hermes' `serve` bug (Desktop never
-registers shell hooks without it) → borrows an available API key
-(NVIDIA/Gemini) for auto-consolidation → installs the nightly backup job →
-adds memory-routing guidance to `~/.hermes/SOUL.md` (explicit "remember/
-forget" commands go to this stack, not Hermes' small built-in store) →
-restarts Hermes Desktop. Safe to re-run any number of times (idempotent).
+builds & starts containers → waits for health → wires every installed agent
+(each is skipped gracefully when absent):
+
+- **Hermes Desktop**: registers all 4 hooks + consent into `~/.hermes/` →
+  patches Hermes' `serve` bug (Desktop never registers shell hooks without
+  it) → borrows an available API key (NVIDIA/Gemini) for auto-consolidation
+  → adds memory-routing guidance to `~/.hermes/SOUL.md` (explicit
+  "remember/forget" commands go to this stack, not Hermes' small built-in
+  store) → restarts Hermes Desktop.
+- **Claude Code**: registers the 4 hooks in `~/.claude/settings.json` and
+  the `hermes-memory` MCP server (user scope) via `scripts/configure_claude.py`.
+  **Needs no API key anywhere**: Claude Code runs on your Claude login, and
+  consolidation uses the service-side LLM or the `consolidate_session` MCP
+  tool. Restart open sessions to pick the hooks up.
+
+It also installs the nightly backup job. Safe to re-run any number of times
+(idempotent).
 
 Verify after a few chats: `curl localhost:8800/health` — `last_written_at`
 must advance after every turn.
+
+### Running Hermes and Claude Code in parallel
+
+Nothing to switch: both agents' hooks stay registered and write to the same
+service. Project slugs stay coherent because the Claude Code adapter first
+resolves the cwd against Hermes' own `projects.db` (same slug as the
+sidebar), then falls back to the git-root folder name. Every record carries
+`source_agent` (`hermes` / `claude-code`) — visible in the `/ui` detail
+panel. Note: this stack complements Claude Code's own CLAUDE.md/auto-memory
+(static per-repo instructions) with semantic, cross-session, cross-project
+recall; memory injection is bounded (`HERMES_MEMORY_MAX_CONTEXT`, default
+6000 chars) since it spends your subscription tokens each turn.
 
 ## Memory browser (`http://localhost:8800/ui`)
 
@@ -235,12 +260,14 @@ hermes-agent/
 ├── ARCHITECTURE.md          # detailed architecture
 ├── UPGRADE_PLAN.md          # roadmap + progress
 ├── hooks/
-│   ├── post_llm_call.py     # record each turn (tagged with sidebar project)
-│   ├── pre_llm_call.py      # auto-inject memory into every turn
-│   ├── on_session_end.py    # trigger consolidation when a session ends
-│   └── on_session_start.py  # catch-up sweep when Desktop opens
+│   ├── post_llm_call.py     # Hermes: record each turn (tagged with sidebar project)
+│   ├── pre_llm_call.py      # Hermes: auto-inject memory into every turn
+│   ├── on_session_end.py    # Hermes: trigger consolidation when a session ends
+│   ├── on_session_start.py  # Hermes: catch-up sweep when Desktop opens
+│   └── claude/              # Claude Code adapter (same lifecycle, 4 hooks)
 ├── scripts/
 │   ├── configure_hermes.py  # auto-wire Hermes (hooks + consent + serve patch + key + backup)
+│   ├── configure_claude.py  # auto-wire Claude Code (settings.json hooks + MCP)
 │   ├── backup.sh            # Qdrant snapshots (called nightly by launchd)
 │   └── memory_transfer.sh   # text-level export/import for device migration
 └── llamaindex-service/      # memory service (FastAPI + LlamaIndex + MCP)

@@ -240,3 +240,23 @@ def test_delete_fact_hard_deletes(client):
     assert memories.delete_fact(client, fact_id) is True
     assert memories.delete_fact(client, fact_id) is False  # already gone
     assert memories.list_facts(client, include_superseded=True) == []
+
+
+# ---------------------------------------------------------------------------
+# source_agent provenance (multi-agent parallel operation)
+# ---------------------------------------------------------------------------
+def test_source_agent_stamped_and_optional(client):
+    embed = FakeEmbed()
+    memory_store.add_message(client, embed, "s30", "user", "from claude",
+                             source_agent="claude-code")
+    memory_store.add_message(client, embed, "s30", "assistant", "no agent given")
+    points, _ = client.scroll(collection_name=config.CHAT_HISTORY_COLLECTION,
+                              limit=10, with_payload=True)
+    by_content = {p.payload["content"]: p.payload for p in points}
+    assert by_content["from claude"]["source_agent"] == "claude-code"
+    assert "source_agent" not in by_content["no agent given"]  # old shape kept
+
+    memories.save_facts(client, embed, [{"text": "tagged fact"}],
+                        source_agent="hermes")
+    fact = memories.list_facts(client)[0]
+    assert fact["source_agent"] == "hermes"

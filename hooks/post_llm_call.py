@@ -168,6 +168,7 @@ def main():
             "assistant_response": assistant_response,
             "project_id": project_id,
             "project_source": project_source,
+            "source_agent": "hermes",
         }
     ).encode()
 

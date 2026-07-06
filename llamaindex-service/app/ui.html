@@ -918,6 +918,7 @@ function select(n, withRipple = true) {
     <tr><td>Importance</td><td>${n.importance}</td></tr>
     <tr><td>Created</td><td>${fmtDate(n.created_at)}</td></tr>
     <tr><td>Session</td><td>${escapeHtml(n.session_id || "—")}</td></tr>
+    <tr><td>Agent</td><td>${escapeHtml(n.source_agent || "—")}</td></tr>
     <tr><td>Status</td><td>${n.superseded ? "superseded" : "active"}</td></tr>
     <tr><td>Links</td><td>${(edgesByNode.get(n.id) || []).length} related</td></tr>`;
   $("pLoadSession").style.display = n.session_id ? "" : "none";
