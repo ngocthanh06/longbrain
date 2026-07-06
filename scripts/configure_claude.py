@@ -11,6 +11,11 @@ Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
                    `claude mcp add` so the memory tools (recall, save_facts,
                    forget_about, consolidate_session, …) are available in
                    every project.
+3. CLAUDE.md     — opt-in only (HERMES_CONFIGURE_CLAUDE_MD=1, set by setup.sh
+                   after asking the user): append/update a marked block in
+                   ~/.claude/CLAUDE.md telling Claude to prefer the
+                   mcp__hermes-memory__* tools over its own built-in
+                   file-based auto-memory when both are available.
 
 No API key is needed anywhere in this path: Claude Code runs on its own
 login, and consolidation either uses the service-side LLM or the
@@ -22,6 +27,7 @@ pick up changes.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -29,9 +35,25 @@ import time
 from pathlib import Path
 
 SETTINGS = Path.home() / ".claude" / "settings.json"
+CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
 REPO = Path(__file__).resolve().parent.parent
 MCP_NAME = "hermes-memory"
 MCP_URL = "http://localhost:8800/mcp"
+
+MARKER_START = "<!-- hermes-agent:memory-priority:start (auto-managed by hermes-agent setup, do not edit inside) -->"
+MARKER_END = "<!-- hermes-agent:memory-priority:end -->"
+CLAUDE_MD_BLOCK = f"""{MARKER_START}
+## Long-term memory priority (hermes-agent)
+When you decide on your own to save long-term memory (a fact, decision, or
+preference worth keeping), prefer calling the `mcp__hermes-memory__*` tools
+(e.g. `save_memories`, `add_to_knowledge_base`) if they appear in this
+session's tool list — that memory is shared across agents via a local
+service at http://localhost:8800.
+Only fall back to your own built-in file-based auto-memory
+(`~/.claude/projects/.../memory/*.md`) when no `mcp__hermes-memory__*` tools
+are available in this session (the MCP server is not registered or not
+reachable).
+{MARKER_END}"""
 
 # Claude Code event -> (script under hooks/claude/, timeout seconds)
 HOOKS = {
@@ -135,9 +157,34 @@ def register_mcp() -> None:
         fail(f"claude mcp add failed: {(add.stderr or add.stdout).strip()}")
 
 
+def patch_claude_md() -> None:
+    print("==> ~/.claude/CLAUDE.md (memory priority instruction)")
+    if os.environ.get("HERMES_CONFIGURE_CLAUDE_MD") != "1":
+        note("skipped (user did not opt in during setup)")
+        return
+
+    text = CLAUDE_MD.read_text() if CLAUDE_MD.exists() else ""
+    if MARKER_START in text and MARKER_END in text:
+        start = text.index(MARKER_START)
+        end = text.index(MARKER_END) + len(MARKER_END)
+        new_text = text[:start] + CLAUDE_MD_BLOCK + text[end:]
+        if new_text == text:
+            note("already present and up to date")
+            return
+        CLAUDE_MD.write_text(new_text)
+        note("updated existing block")
+        return
+
+    CLAUDE_MD.parent.mkdir(parents=True, exist_ok=True)
+    sep = "" if not text else ("\n\n" if not text.endswith("\n") else "\n")
+    CLAUDE_MD.write_text(text + sep + CLAUDE_MD_BLOCK + "\n")
+    note("added block")
+
+
 def main() -> int:
     patch_settings()
     register_mcp()
+    patch_claude_md()
     print("✓ Claude Code wired" if ok_all else "✗ finished with problems (see above)")
     return 0 if ok_all else 1
 

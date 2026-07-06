@@ -62,6 +62,22 @@ fi
 # 5b. Wire Claude Code, if installed (hooks + MCP; works on login, no API key)
 if command -v claude >/dev/null 2>&1; then
   step "Configuring Claude Code automatically"
+  HERMES_CONFIGURE_CLAUDE_MD=0
+  if [ -t 0 ]; then
+    echo "Tuy chon: them mot doan chi thi vao ~/.claude/CLAUDE.md (ap dung cho MOI project)"
+    echo "de khi Claude Code tu quyet dinh luu long-term memory, no uu tien goi MCP"
+    echo "hermes-memory (localhost:8800) thay vi bo nho file-based built-in rieng; chi"
+    echo "dung built-in khi cac tool mcp__hermes-memory__* khong co san trong phien."
+    read -r -p "Ban co dong y them chi thi nay khong? [y/N] " claude_md_consent
+    case "$claude_md_consent" in
+      [yY]*) HERMES_CONFIGURE_CLAUDE_MD=1 ;;
+      *) echo "Bo qua — khong sua ~/.claude/CLAUDE.md." ;;
+    esac
+  else
+    echo "Khong o che do tuong tac — bo qua cau hoi cho ~/.claude/CLAUDE.md."
+    echo "Chay lai ./setup.sh trong terminal neu muon bat tuy chon nay."
+  fi
+  export HERMES_CONFIGURE_CLAUDE_MD
   python3 scripts/configure_claude.py
 else
   step "Claude Code not found — skipping (install it and re-run ./setup.sh to wire it)"
