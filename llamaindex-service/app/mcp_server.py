@@ -60,7 +60,10 @@ def _register_tools() -> None:
         """Save distilled long-term facts (decisions, preferences, project info,
         constraints, tasks) into semantic memory. Near-duplicate existing facts
         are superseded by the new version automatically. Facts inherit the
-        session's project unless `project` (a Hermes project slug) is given."""
+        session's project unless `project` (a Hermes project slug) is given.
+        If this follows a consolidate_session handout, the session's turns are
+        marked consolidated now — pass the same session_id (an empty facts
+        list is fine when nothing was worth keeping)."""
         client = state["qdrant_client"]
         project_id = project or (
             memory_store.get_session_project(client, session_id) if session_id
@@ -71,8 +74,15 @@ def _register_tools() -> None:
             [f.model_dump() for f in facts],
             session_id=session_id, project_id=project_id,
         )
+        # Close the consolidation loop: turns handed out by consolidate_session
+        # only count as consolidated once the extraction actually came back.
+        handout = consolidation.pop_handout(session_id) if session_id else []
+        if handout:
+            memory_store.mark_consolidated(client, handout)
         if not results:
-            return "Nothing to save."
+            return "Nothing to save." + (
+                f" Marked {len(handout)} turn(s) consolidated." if handout else ""
+            )
         return f"(project: {project_id})\n" + "\n".join(
             f"[{r['status']}] {r['text']}" for r in results
         )
@@ -96,15 +106,19 @@ def _register_tools() -> None:
         points = memory_store.fetch_unconsolidated(client, session_id)
         if not points:
             return "Nothing to consolidate for this session."
-        memory_store.mark_consolidated(client, [p.id for p in points])
+        # Don't mark yet — the turns only count as consolidated when the facts
+        # come back via save_memories. If that never happens, the session is
+        # offered again next time instead of being silently dropped.
+        consolidation.record_handout(session_id, [p.id for p in points])
         transcript = consolidation.transcript_from_points(points)
         instructions = consolidation.EXTRACTION_INSTRUCTIONS.format(
             max_facts=config.CONSOLIDATION_MAX_FACTS
         )
         return (
             f"{instructions}\n\n"
-            f"After extracting, call save_memories(facts, session_id={session_id!r}).\n\n"
-            f"Transcript:\n{transcript}"
+            f"After extracting, call save_memories(facts, session_id={session_id!r}) — "
+            f"even with an empty facts list if nothing qualifies.\n\n"
+            f"<transcript>\n{transcript}\n</transcript>"
         )
 
     @mcp.tool()
@@ -147,14 +161,22 @@ def _register_tools() -> None:
         )
         if not hits:
             return "No matching memories found."
-        return "Candidates (call forget_memory(id) to delete):\n" + "\n".join(
+        return "Candidates (after the user confirms, call forget_memory(id, confirm=true)):\n" + "\n".join(
             f"[{h['id']}] ({h['project_id']}/{h['type']}) {h['text']}" for h in hits
         )
 
     @mcp.tool()
-    def forget_memory(memory_id: str) -> str:
+    def forget_memory(memory_id: str, confirm: bool = False) -> str:
         """Permanently delete one stored fact by id (get ids from
-        list_memories or forget_about)."""
+        list_memories or forget_about). Deletion is irreversible: pass
+        confirm=true ONLY after the user explicitly confirmed this specific
+        memory should be removed."""
+        if not confirm:
+            return (
+                "Refused: deletion needs the user's explicit confirmation. "
+                "Show them the memory text, and once they agree call "
+                "forget_memory(memory_id, confirm=true)."
+            )
         if memories.delete_fact(state["qdrant_client"], memory_id):
             return f"Deleted memory {memory_id}."
         return f"No memory with id {memory_id}."

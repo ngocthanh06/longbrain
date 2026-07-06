@@ -1,22 +1,21 @@
-# Kiến trúc Hermes Memory Stack
+# Hermes Memory Stack Architecture
 
-Tài liệu kỹ thuật chi tiết. Hướng dẫn cài đặt/sử dụng nhanh: xem [README.md](README.md).
+Detailed technical documentation. For quick install/usage instructions see [README.md](README.md).
 
-## 1. Tổng quan
+## 1. Overview
 
-Memory backend đóng gói bằng Docker, cấp cho Hermes Desktop bộ nhớ dài hạn
-(long-term memory) theo mô hình **single-user, local-first**: mỗi người dùng
-chạy một stack độc lập, dữ liệu nằm hoàn toàn trên máy của họ, không sync,
-không chia sẻ.
+A Docker-packaged memory backend that gives Hermes Desktop long-term memory
+following a **single-user, local-first** model: each user runs an independent
+stack, all data lives entirely on their machine — no sync, no sharing.
 
 ```
-┌─ MÁY NGƯỜI DÙNG ────────────────────────────────────────────────────────┐
+┌─ USER'S MACHINE ─────────────────────────────────────────────────────────┐
 │                                                                          │
-│  ┌─ Hermes Desktop (native app — LLM chat chạy ở đây) ────────────────┐  │
+│  ┌─ Hermes Desktop (native app — the chat LLM runs here) ─────────────┐  │
 │  │                                                                     │  │
 │  │   hooks.post_llm_call ──────────────┐        MCP client ─────────┐ │  │
 │  └──────────────────────────────────────┼───────────────────────────┼─┘  │
-│                                         │ (sau mỗi lượt chat)       │    │
+│                                         │ (after every chat turn)   │    │
 │                              hooks/post_llm_call.py                 │    │
 │                                         │ POST /memory/append       │    │
 │                                         ▼                           ▼    │
@@ -29,13 +28,13 @@ không chia sẻ.
 │  │  │      └────────┬───────────────┘                                 │  │ │
 │  │  │               ▼                                                 │  │ │
 │  │  │   ┌─ Memory Engine ────────────────────────────────┐            │  │ │
-│  │  │   │ L1 Working   ChatMemoryBuffer (dựng theo phiên)│            │  │ │
+│  │  │   │ L1 Working   ChatMemoryBuffer (per session)    │            │  │ │
 │  │  │   │ L2 Episodic  memory_store.py                   │            │  │ │
 │  │  │   │ L3 Semantic  memories.py + consolidation.py    │            │  │ │
 │  │  │   │ L4 Knowledge documents.py                      │            │  │ │
 │  │  │   └────────────────────────────────────────────────┘            │  │ │
 │  │  │               │                                                 │  │ │
-│  │  │   Embedding: fastembed ONNX (bake trong image, local, no key)   │  │ │
+│  │  │   Embedding: fastembed ONNX (baked into image, local, no key)   │  │ │
 │  │  │   LLM (optional): none|anthropic|openai|nvidia|ollama           │  │ │
 │  │  └──────────────┬──────────────────────────────────────────────────┘  │ │
 │  │                 │ HTTP :6333                                          │ │
@@ -46,88 +45,91 @@ không chia sẻ.
 │  │                                                        │               │ │
 │  │  [ollama] — optional profile (--profile ollama)        │               │ │
 │  └────────────────────────────────────────────────────────┘               │ │
-│         volume: hermes_data (/data — file tài liệu gốc)                   │ │
+│         volume: hermes_data (/data — original document files)             │ │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 2. Bốn tầng bộ nhớ
+## 2. The four memory layers
 
-| Tầng | Vai trò | Lưu ở | Module |
+| Layer | Role | Stored in | Module |
 |---|---|---|---|
-| **L1 Working** | Ngữ cảnh phiên hiện tại — `ChatMemoryBuffer` (giới hạn ~3000 token) dựng lại từ L2 mỗi lượt | RAM (dựng lại mỗi request) | `main.py` |
-| **L2 Episodic** | Từng lượt hội thoại thô (user + assistant), có vector → tìm được theo ngữ nghĩa xuyên phiên | `hermes_chat_history` | `memory_store.py` |
-| **L3 Semantic** | Fact đã chưng cất từ L2: quyết định, sở thích, thông tin dự án, task — thứ đáng nhớ vĩnh viễn | `hermes_memories` | `memories.py`, `consolidation.py` |
-| **L4 Knowledge** | Tài liệu ingest (PDF/text/markdown) — RAG cổ điển | `hermes_documents` + file gốc trong `/data/documents` | `documents.py` |
+| **L1 Working** | Current-session context — a `ChatMemoryBuffer` (~3000-token cap) rebuilt from L2 every turn | RAM (rebuilt per request) | `main.py` |
+| **L2 Episodic** | Every raw conversation turn (user + assistant), embedded → semantically searchable across sessions | `hermes_chat_history` | `memory_store.py` |
+| **L3 Semantic** | Facts distilled from L2: decisions, preferences, project info, tasks — the permanently memorable stuff | `hermes_memories` | `memories.py`, `consolidation.py` |
+| **L4 Knowledge** | Ingested documents (PDF/text/markdown) — classic RAG | `hermes_documents` + original files in `/data/documents` | `documents.py` |
 
-## 3. Luồng dữ liệu
+## 3. Data flows
 
-### 3a. Luồng ghi (mỗi lượt chat, tự động)
+### 3a. Write flow (every chat turn, automatic)
 
 ```
-User chat trong Hermes Desktop
-  → Hermes bắn event post_llm_call, pipe JSON vào stdin của hook:
+User chats in Hermes Desktop
+  → Hermes fires the post_llm_call event, piping JSON into the hook's stdin:
       {session_id, extra: {user_message, assistant_response, ...}}
-  → hooks/post_llm_call.py  (best-effort, không bao giờ làm hỏng lượt chat)
+  → hooks/post_llm_call.py  (best-effort, never breaks the chat turn)
   → POST /memory/append
   → memory_store.add_message():
-      - embed nội dung (fastembed, trong container)
+      - embed the content (fastembed, inside the container)
       - point ID = uuid5(user_id : session_id : role : sha256(content))
-        → IDEMPOTENT: retry/ghi trùng không tạo bản ghi mới
-      - upsert vào hermes_chat_history
-      - cập nhật last_written_at trong hermes_meta (để phát hiện hook chết)
+        → IDEMPOTENT: retries/duplicate writes never create new records
+      - upsert into hermes_chat_history
+      - update last_written_at in hermes_meta (to detect a dead hook)
 ```
 
-### 3b. Luồng chưng cất (consolidation, L2 → L3)
+### 3b. Distillation flow (consolidation, L2 → L3)
 
 ```
-Kết thúc phiên / theo yêu cầu:
+On session end / on demand:
   MCP tool consolidate_session(session_id)
     │
-    ├─ Service CÓ LLM (LLM_PROVIDER != none):
-    │    lấy turn chưa xử lý → LLM extract facts (JSON) → save_facts()
-    │    → đánh dấu turn consolidated=true
+    ├─ Service HAS an LLM (LLM_PROVIDER != none):
+    │    fetch unprocessed turns → LLM extracts facts (JSON) → save_facts()
+    │    → mark turns consolidated=true
     │
-    └─ Service KHÔNG có LLM (mặc định):
-         trả transcript + hướng dẫn extract cho CHÍNH model của Hermes
-         → Hermes tự chưng cất → gọi MCP tool save_memories(facts)
+    └─ Service has NO LLM (default):
+         return the transcript + extraction instructions to Hermes' OWN model
+         → Hermes distills it itself → calls the MCP tool save_memories(facts)
+         (turns are only marked consolidated when save_memories comes back —
+          a model that never answers just leaves the session for a later pass;
+          likewise, unparseable LLM output raises instead of counting as "no facts")
 
-save_facts() chống trùng lặp 2 lớp:
-  1. Hash chính xác (point ID từ sha256 text chuẩn hoá) → bỏ qua nếu trùng
-  2. Similarity ≥ 0.92 với fact đang hiệu lực → fact cũ bị đánh dấu
-     superseded_by=<id mới> (giữ lại để truy vết, loại khỏi recall)
+save_facts() deduplicates on two levels:
+  1. Exact hash (point ID from sha256 of normalized text) → skip if duplicate
+  2. Similarity ≥ 0.92 with a currently active fact → the old fact is marked
+     superseded_by=<new id> (kept for traceability, excluded from recall)
 ```
 
-### 3c. Luồng đọc (recall)
+### 3c. Read flow (recall)
 
 ```
-POST /memory/recall {query, session_id?}   (hoặc MCP tool memory_recall)
+POST /memory/recall {query, session_id?}   (or the MCP tool memory_recall)
   │
-  ├─ L3: search hermes_memories (lọc superseded)
-  │      điểm = similarity × 0.5^(tuổi/90 ngày) × (0.5 + 0.5×importance)
-  ├─ L2: search hermes_chat_history xuyên phiên (loại phiên hiện tại)
-  │      điểm = similarity × 0.5^(tuổi/30 ngày)
-  └─ L1: N lượt gần nhất của phiên hiện tại (theo thời gian)
+  ├─ L3: search hermes_memories (filter out superseded)
+  │      score = similarity × 0.5^(age/90 days) × (0.5 + 0.5×importance)
+  ├─ L2: search hermes_chat_history across sessions (excluding the current one)
+  │      score = similarity × 0.5^(age/30 days)
+  └─ L1: the N most recent turns of the current session (chronological)
   │
-  └→ context_block sẵn sàng inject vào system prompt:
-       [Ghi nhớ dài hạn] … [Hội thoại cũ liên quan] … [Các lượt gần nhất] …
+  └→ context_block ready to inject into the system prompt:
+       [Long-term memories] … [Related past conversations] … [Most recent turns] …
 ```
 
-## 4. Schema Qdrant
+## 4. Qdrant schema
 
-Tất cả collection vector đều Cosine, dimension theo embedding model
-(mặc định 384 — `paraphrase-multilingual-MiniLM-L12-v2`).
+All vector collections use Cosine distance; dimension follows the embedding
+model (default 384 — `paraphrase-multilingual-MiniLM-L12-v2`).
 
 ### `hermes_chat_history` (L2)
 ```jsonc
 // point ID: uuid5("msg:{user_id}:{session_id}:{role}:{sha256(content)}")
 {
-  "user_id": "local",        // payload index — sẵn sàng multi-user tương lai
+  "user_id": "local",        // payload index — ready for future multi-user
   "session_id": "…",         // payload index
-  "project_id": "erp",       // payload index — project sidebar (xem mục 11)
+  "project_id": "erp",       // payload index — sidebar project (see section 11)
   "role": "user|assistant",  // payload index
   "content": "…",
   "timestamp": 1783229012.9, // payload index (float)
-  "consolidated": false      // payload index — đã chưng cất chưa
+  "consolidated": false      // payload index — distilled yet or not
 }
 ```
 
@@ -136,171 +138,174 @@ Tất cả collection vector đều Cosine, dimension theo embedding model
 // point ID: uuid5("fact:{user_id}:{sha256(normalized_text)}")
 {
   "user_id": "local",
-  "session_id": "…",              // phiên nguồn
-  "project_id": "erp",            // payload index — kế thừa từ phiên nguồn
+  "session_id": "…",              // source session
+  "project_id": "erp",            // payload index — inherited from the source session
   "type": "fact|preference|decision|task",
   "text": "…",
   "importance": 0.8,              // 0..1
   "created_at": 1783229012.9,
-  "superseded_by": "<point-id>"   // chỉ có khi bị fact mới thay thế
+  "superseded_by": "<point-id>"   // only present when replaced by a newer fact
 }
 ```
 
 ### `hermes_documents` (L4)
-Do LlamaIndex `QdrantVectorStore` quản lý (chunk + metadata `user_id`,
-`source`, `stored_path` → file gốc trong `/data/documents/<sha12>_<tên>`).
+Managed by LlamaIndex's `QdrantVectorStore` (chunks + metadata `user_id`,
+`source`, `stored_path` → original file in `/data/documents/<sha12>_<name>`).
 
 ### `hermes_meta` (guard)
-1 point cố định, vector dim=1: `{schema_version, embed_provider, embed_model,
-embed_dim, last_written_at}`. Lúc khởi động service so config hiện tại với
-meta — **lệch embedding là từ chối chạy** (bảo vệ không gian vector).
+A single fixed point, vector dim=1: `{schema_version, embed_provider,
+embed_model, embed_dim, last_written_at}`. At startup the service compares the
+current config against the meta — **an embedding mismatch refuses to boot**
+(protects the vector space).
 
-## 5. Provider (cấu hình qua .env)
+## 5. Providers (configured via .env)
 
 | | Embedding | LLM |
 |---|---|---|
-| Vai trò | Quyết định không gian vector — **chọn một lần** | Chỉ dùng cho consolidation + `/chat` — **đổi thoải mái** |
-| Mặc định | `fastembed` (ONNX local, bake trong image, không cần key, không cần GPU) | `none` (model của Hermes tự chưng cất qua MCP) |
-| Tuỳ chọn | `ollama`, `openai`, `nvidia` | `anthropic`, `openai`, `nvidia`, `ollama` |
-| Đổi thế nào | Backup → `docker compose down -v` → đổi .env → re-ingest (meta guard chặn đổi ngầm) | Sửa `.env` + API key → `docker compose up -d` |
+| Role | Determines the vector space — **pick once** | Only used for consolidation + `/chat` — **swap freely** |
+| Default | `fastembed` (local ONNX, baked into the image, no key, no GPU) | `none` (Hermes' own model distills via MCP) |
+| Options | `ollama`, `openai`, `nvidia` | `anthropic`, `openai`, `nvidia`, `ollama` |
+| How to change | Backup → `docker compose down -v` → edit .env → re-ingest (the meta guard blocks silent changes) | Edit `.env` + API key → `docker compose up -d` |
 
-`fastembed` được **pin cứng phiên bản** trong requirements.txt — thư viện này
-từng đổi cách pooling giữa các minor version, không pin là vector giữa hai
-lần build image lệch nhau âm thầm.
+`fastembed` is **hard-pinned** in requirements.txt — this library has changed
+its pooling behavior between minor versions before; without the pin, vectors
+between two image builds can silently diverge.
 
-## 6. Bề mặt API
+## 6. API surface
 
 ### REST (`http://localhost:8800`)
-| Endpoint | Chức năng |
+| Endpoint | Purpose |
 |---|---|
-| `GET /health` | Trạng thái + `last_written_at` + số điểm từng collection |
-| `POST /memory/append` | Ghi 1 lượt hội thoại (hook gọi) — idempotent |
-| `POST /memory/recall` | Truy hồi tổng hợp L1+L2+L3 → context_block |
-| `POST /memory/facts` | Lưu facts đã chưng cất |
-| `POST /memory/search` | Tìm trong L3 |
-| `POST /memory/consolidate` | Chưng cất (cần LLM; `background: true` cho hook) |
-| `GET /memory/pending-consolidation` | Phiên đang chờ chưng cất |
-| `GET /memory/facts` · `DELETE /memory/facts/{id}` | Liệt kê / quên fact |
-| `DELETE /sessions/{id}` | Xoá trọn một phiên |
-| `POST /ingest/text` `/ingest/file` | Nạp tài liệu vào L4 |
-| `POST /query` | Tìm trong L4 |
-| `POST /chat` | Chat trực tiếp với service (cần LLM; 503 nếu `none`) |
-| `GET /sessions` `/sessions/{id}/history` | Danh sách phiên / nội dung phiên |
+| `GET /health` | Status + `last_written_at` + point counts per collection |
+| `POST /memory/append` | Record one conversation turn (called by the hook) — idempotent |
+| `POST /memory/recall` | Combined recall of L1+L2+L3 → context_block |
+| `POST /memory/facts` | Save distilled facts |
+| `POST /memory/search` | Search L3 |
+| `POST /memory/consolidate` | Distill (requires LLM; `background: true` for hooks) |
+| `GET /memory/pending-consolidation` | Sessions awaiting distillation |
+| `GET /memory/facts` · `DELETE /memory/facts/{id}` | List / forget facts |
+| `DELETE /sessions/{id}` | Delete an entire session |
+| `POST /ingest/text` `/ingest/file` | Ingest documents into L4 |
+| `POST /query` | Search L4 |
+| `POST /chat` | Chat directly with the service (requires LLM; 503 if `none`) |
+| `GET /sessions` `/sessions/{id}/history` | List sessions / session contents |
 
 ### MCP tools (`http://localhost:8800/mcp`, Streamable HTTP)
 `memory_recall` · `memory_append` · `consolidate_session` · `save_memories` ·
 `list_memories` · `forget_about` · `forget_memory` · `search_history` ·
 `list_sessions` · `list_projects` · `search_knowledge_base` ·
-`add_to_knowledge_base` — các tool tìm kiếm/ghi đều nhận param `project` tuỳ chọn.
+`add_to_knowledge_base` — all search/write tools accept an optional `project` param.
 
-## 7. Tích hợp Hermes — 3 điểm chạm
+## 7. Hermes integration — 3 touch points
 
-`setup.sh` → `scripts/configure_hermes.py` tự động hoá toàn bộ (idempotent):
+`setup.sh` → `scripts/configure_hermes.py` automates everything (idempotent):
 
 1. **`~/.hermes/config.yaml`**: 3 hooks + `hooks_auto_accept: true` + MCP server:
-   - `post_llm_call` → ghi từng lượt chat vào memory (kèm project từ cwd)
-   - `pre_llm_call` → auto-inject memory: recall theo user_message rồi trả
-     `{"context": ...}` (contract chính thức của Hermes) — model không cần
-     nhớ gọi tool nữa
-   - `on_session_end` → trigger consolidation nền cho phiên vừa kết thúc
-   Ngoài ra: tự mượn API key từ `~/.hermes/.env` (NVIDIA → Gemini) cho
-   auto-consolidation, cài launchd backup 2:00 sáng (retention 7 bản), và
-   thêm block **memory routing vào `~/.hermes/SOUL.md`** — Hermes có memory
-   tool built-in (file text ~2200 ký tự) cạnh tranh với MCP tools khi user
-   ra lệnh "nhớ/quên" tường minh; block này định tuyến facts dài hạn về MCP
-   (Qdrant), built-in chỉ giữ định danh cốt lõi.
-2. **`~/.hermes/shell-hooks-allowlist.json`**: consent cho hook (Hermes yêu cầu
-   duyệt từng command; Desktop không có TTY để hỏi → phải ghi sẵn).
-   ⚠️ Consent gắn với mtime của script — **sửa file hook là phải chạy lại setup.sh**.
-3. **Vá bug Hermes** (`hermes_cli/main.py`): lệnh `serve` (backend Desktop) bị
-   thiếu trong `_AGENT_COMMANDS` nên shell hooks không bao giờ được đăng ký cho
-   chat từ Desktop (CLI hoạt động, Desktop âm thầm không). Patch thêm `"serve"`.
-   ⚠️ **Update Hermes sẽ ghi đè patch — chạy lại `./setup.sh` sau mỗi lần update.**
+   - `post_llm_call` → record every chat turn into memory (with the project from cwd)
+   - `pre_llm_call` → auto-inject memory: recall based on user_message, return
+     `{"context": ...}` (Hermes' official contract) — the model no longer has
+     to remember to call a tool
+   - `on_session_end` → trigger background consolidation for the session that just ended
+   Additionally: borrows an API key from `~/.hermes/.env` (NVIDIA → Gemini) for
+   auto-consolidation, installs the 2:00 AM launchd backup (7-copy retention), and
+   adds a **memory-routing block to `~/.hermes/SOUL.md`** — Hermes has a built-in
+   memory tool (a ~2200-char text file) that competes with the MCP tools when the
+   user gives explicit "remember/forget" commands; this block routes long-term
+   facts to MCP (Qdrant), while the built-in keeps only core identity.
+2. **`~/.hermes/shell-hooks-allowlist.json`**: hook consent (Hermes requires
+   per-command approval; Desktop has no TTY to ask → must be pre-recorded).
+   ⚠️ Consent is tied to the script's mtime — **editing a hook file means re-running setup.sh**.
+3. **Hermes bug patch** (`hermes_cli/main.py`): the `serve` command (the Desktop
+   backend) is missing from `_AGENT_COMMANDS`, so shell hooks are never registered
+   for Desktop chats (CLI works, Desktop silently doesn't). The patch adds `"serve"`.
+   ⚠️ **A Hermes update overwrites the patch — re-run `./setup.sh` after every update.**
 
-## 8. Vận hành
+## 8. Operations
 
-- **Kiểm tra sống**: `curl localhost:8800/health` — `last_written_at` phải
-  nhích sau mỗi lượt chat. Xem trực quan: `http://localhost:6333/dashboard`.
-- **Chẩn đoán hook**: `hermes hooks doctor` · payload thô của mọi lần hook
-  chạy nằm ở `logs/hook-debug.jsonl`.
-- **Backup**: `./scripts/backup.sh` — snapshot mọi collection vào `./backups/`.
-- **Dữ liệu**: named volumes `qdrant_data` (vector) + `hermes_data` (file gốc).
-  `docker compose down -v` = xoá sạch làm lại.
-- **Ports**: 8800 (service, giữ 8000 trống cho hindsight server của Hermes),
-  6333/6334 (Qdrant), 11434 (Ollama nếu bật profile).
+- **Liveness check**: `curl localhost:8800/health` — `last_written_at` must
+  advance after every chat turn. Visual view: `http://localhost:6333/dashboard`.
+- **Hook diagnostics**: `hermes hooks doctor` · raw payloads of every hook
+  invocation live in `logs/hook-debug.jsonl`.
+- **Backup**: `./scripts/backup.sh` — snapshots every collection into `./backups/`.
+- **Data**: named volumes `qdrant_data` (vectors) + `hermes_data` (original files).
+  `docker compose down -v` = wipe everything and start over.
+- **Ports**: 8800 (service — keeps 8000 free for Hermes' hindsight server),
+  6333/6334 (Qdrant), 11434 (Ollama if the profile is enabled).
 
-## 9. Cấu trúc mã nguồn
+## 9. Source layout
 
 ```
 hermes-agent/
-├── setup.sh                     # cài đặt một lệnh: Docker + cấu hình Hermes tự động
-├── docker-compose.yml           # qdrant + llamaindex (+ ollama optional profile)
-├── .env.example                 # cấu hình provider/collection
-├── ARCHITECTURE.md              # tài liệu này
+├── setup.sh                     # one-command install: Docker + automatic Hermes wiring
+├── docker-compose.yml           # qdrant + llamaindex (+ optional ollama profile)
+├── .env.example                 # provider/collection configuration
+├── ARCHITECTURE.md              # this document
 ├── hooks/
-│   └── post_llm_call.py         # hook ghi memory (parse đa format, debug log)
+│   └── post_llm_call.py         # memory-write hook (multi-format parsing, debug log)
 ├── scripts/
-│   ├── configure_hermes.py      # tự vá config.yaml + consent + bug serve + restart app
-│   └── backup.sh                # snapshot Qdrant
+│   ├── configure_hermes.py      # auto-patch config.yaml + consent + serve bug + app restart
+│   └── backup.sh                # Qdrant snapshots
 ├── logs/
-│   └── hook-debug.jsonl         # payload thô mỗi lần hook chạy (chẩn đoán)
+│   └── hook-debug.jsonl         # raw payload of every hook run (diagnostics)
 └── llamaindex-service/
-    ├── Dockerfile               # bake sẵn model fastembed
-    ├── requirements.txt         # fastembed pin cứng ==0.7.4
+    ├── Dockerfile               # fastembed model baked in
+    ├── requirements.txt         # fastembed hard-pinned ==0.7.4
     └── app/
-        ├── main.py              # FastAPI endpoints + lifespan + mount MCP
-        ├── config.py            # đọc env, hằng số
-        ├── providers.py         # factory embedding + LLM theo provider
+        ├── main.py              # FastAPI endpoints + lifespan + MCP mount
+        ├── config.py            # env parsing, constants
+        ├── providers.py         # embedding + LLM factory per provider
         ├── qdrant_setup.py      # auto-init collections/indexes + schema guard
-        ├── memory_store.py      # L2: ghi/đọc/search hội thoại (ID tất định)
+        ├── memory_store.py      # L2: write/read/search conversations (deterministic IDs)
         ├── memories.py          # L3: save_facts (dedup/supersede) + recall + decay
-        ├── consolidation.py     # chưng cất L2→L3 (prompt + parse)
-        ├── documents.py         # L4: ingest tài liệu + giữ file gốc
-        ├── mcp_server.py        # 8 MCP tools (Streamable HTTP tại /mcp)
-        └── runtime.py           # state chia sẻ giữa REST và MCP
+        ├── consolidation.py     # L2→L3 distillation (prompt + parsing)
+        ├── documents.py         # L4: document ingest + original file retention
+        ├── mcp_server.py        # MCP tools (Streamable HTTP at /mcp)
+        └── runtime.py           # state shared between REST and MCP
 ```
 
-## 10. Bộ nhớ theo dự án (project partitioning)
+## 10. Per-project memory (project partitioning)
 
-Memory được phân vùng theo **project trong sidebar của Hermes Desktop** —
-không tách collection, mà bằng trường `project_id` (có payload index) trong
-cả 3 tầng dữ liệu, đúng khuyến nghị multitenancy của Qdrant.
+Memory is partitioned by **Hermes Desktop sidebar project** — not with separate
+collections, but with a `project_id` field (payload-indexed) across all 3 data
+layers, following Qdrant's multitenancy recommendation.
 
-**Nguồn sự thật là chính Hermes.** Sidebar project của Hermes lưu trong
-`~/.hermes/projects.db` (bảng `projects` + `project_folders`, mỗi project neo
-một hoặc nhiều thư mục). Không có file mapping riêng phải bảo trì.
+**The source of truth is Hermes itself.** Hermes' sidebar projects live in
+`~/.hermes/projects.db` (tables `projects` + `project_folders`; each project is
+anchored to one or more folders). There is no separate mapping file to maintain.
 
-**Luồng gắn project (tự động 100%):**
+**Project-tagging flow (100% automatic):**
 ```
-Chat trong Hermes (bất kỳ đâu)
-  → hook payload có sẵn "cwd" (thư mục phiên chat đang đứng)
-  → hooks/post_llm_call.py tra projects.db: longest-prefix match
-    cwd với các folder của project (project con thắng project cha,
-    ví dụ /work/erp thắng /work) → slug, không khớp → "default"
-  → project_id đi kèm /memory/append, lưu vào payload
+Chat in Hermes (anywhere)
+  → the hook payload already contains "cwd" (the chat session's working directory)
+  → hooks/post_llm_call.py looks it up in projects.db: longest-prefix match of
+    cwd against each project's folders (child project beats parent project,
+    e.g. /work/erp beats /work) → slug; no match → "default"
+  → project_id rides along with /memory/append and is stored in the payload
 ```
 
-**Luồng truy hồi:**
-- `memory_recall(query, session_id)` — service tự suy project từ message đã
-  lưu của chính phiên đó (không cần ai khai báo). Phiên mới tinh chưa có
-  message thì truyền `project` tường minh (model của Hermes có thể gọi
-  `list_projects` để biết slug).
-- **Soft boost thay vì filter cứng** cho memory/hội thoại: điểm cùng project
-  × `RECALL_PROJECT_BOOST` (mặc định 1.5). Ký ức dự án khác vẫn nổi lên được
-  nếu thực sự liên quan — đúng giá trị của bộ nhớ xuyên dự án.
-- **Tài liệu (L4) filter cứng** khi chỉ định project — tài liệu dự án A trả
-  lời cho câu hỏi dự án B thường là nhiễu.
+**Recall flow:**
+- `memory_recall(query, session_id)` — the service infers the project from the
+  session's own stored messages (nobody has to declare it). For a brand-new
+  session with no messages yet, pass `project` explicitly (Hermes' model can
+  call `list_projects` to discover slugs).
+- **Soft boost instead of a hard filter** for memories/conversations:
+  same-project scores × `RECALL_PROJECT_BOOST` (default 1.5). Memories from
+  other projects can still surface when genuinely relevant — exactly the value
+  of cross-project memory.
+- **Documents (L4) are hard-filtered** when a project is specified — project A's
+  documents answering project B's questions is usually noise.
 
-Dữ liệu cũ không có `project_id` được coi là `"default"` — không cần migrate.
-Tạo project mới trong sidebar là tự nhận, không phải cấu hình gì thêm.
+Old data without a `project_id` is treated as `"default"` — no migration
+needed. Creating a new project in the sidebar is picked up automatically, with
+zero extra configuration.
 
-## 11. Định hướng mở rộng (đã trả trước chi phí)
+## 11. Extension directions (cost already prepaid)
 
-- Mọi payload đều có `user_id` (mặc định `"local"`) và point ID tất định →
-  chuyển lên server chung multi-user sau này chỉ là thêm auth + đổi giá trị,
-  không phải migrate dữ liệu.
-- Đổi embedding model: tạo collection mới → re-embed từ file gốc (L4) và
-  content trong payload (L2/L3) → flip alias. Meta guard đảm bảo không bao
-  giờ trộn hai không gian vector.
-- Chưa làm (chủ đích, để đơn giản): TTL/quên tự động, hybrid search
-  (dense+sparse), auth — bật khi có nhu cầu thật.
+- Every payload carries a `user_id` (default `"local"`) and deterministic point
+  IDs → moving to a shared multi-user server later is just adding auth +
+  changing the value, not migrating data.
+- Changing the embedding model: create new collections → re-embed from the
+  original files (L4) and payload content (L2/L3) → flip an alias. The meta
+  guard guarantees two vector spaces are never mixed.
+- Deliberately not built yet (for simplicity): TTL/automatic forgetting, hybrid
+  search (dense+sparse), auth — enable when there is a real need.

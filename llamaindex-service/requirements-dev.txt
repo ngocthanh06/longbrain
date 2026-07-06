@@ -1,0 +1,5 @@
+# Test-only dependencies — install on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# Run from llamaindex-service/:  python -m pytest tests -q
+# (or in the container: see "Testing" in README.md)
+pytest>=8,<9

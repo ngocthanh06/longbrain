@@ -88,7 +88,7 @@ must advance after every turn.
 | `save_memories(facts, session_id?, project?)` | Save distilled facts (auto dedup/supersede) |
 | `search_history(query, top_k?, project?)` | Semantic search across all past conversations |
 | `list_memories(project?)` | List stored facts (with ids) |
-| `forget_about(query)` → `forget_memory(id)` | Controlled forgetting: list candidates first, delete by id |
+| `forget_about(query)` → `forget_memory(id, confirm=true)` | Controlled forgetting: list candidates first, delete by id — refuses without `confirm=true` (set only after the user agreed) |
 | `forget_session(session_id)` | Delete one session's entire stored history |
 | `forget_everything(confirm="DELETE ALL")` | Full memory reset — requires the exact confirmation string |
 | `list_sessions()` / `list_projects()` | List stored sessions / projects |
@@ -170,7 +170,21 @@ hermes-agent/
 │   ├── configure_hermes.py  # auto-wire Hermes (hooks + consent + serve patch + key + backup)
 │   └── backup.sh            # Qdrant snapshots (called nightly by launchd)
 └── llamaindex-service/      # memory service (FastAPI + LlamaIndex + MCP)
+    └── tests/               # pytest suite (runs in the container, see below)
 ```
+
+## Testing
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh \
+  -v "$PWD:/repo" llamaindex \
+  -c "pip install -q 'pytest>=8,<9' && cd /repo/llamaindex-service && python -m pytest tests -q"
+```
+
+Covers: point-id idempotency, fact dedup/supersede, the recall min-score
+filter (against an in-process Qdrant), LLM output parsing (parse failure vs
+deliberate `[]`), transcript truncation, and the hooks' payload extraction +
+cwd→project resolution (longest prefix, archived projects, symlinks).
 
 ## Operational notes
 

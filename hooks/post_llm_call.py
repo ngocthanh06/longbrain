@@ -55,12 +55,14 @@ def resolve_project(cwd: str) -> str:
     except Exception:
         return "default"
 
-    cwd_norm = os.path.normpath(cwd)
+    # realpath (not normpath): a cwd reached through a symlink must still
+    # match the project folder it points to.
+    cwd_norm = os.path.realpath(cwd)
     best, best_len = "default", -1
     for slug, path in rows:
         if not path:
             continue
-        p = os.path.normpath(path)
+        p = os.path.realpath(path)
         if (cwd_norm == p or cwd_norm.startswith(p + os.sep)) and len(p) > best_len:
             best, best_len = slug, len(p)
     return best
