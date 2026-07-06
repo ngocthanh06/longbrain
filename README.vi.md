@@ -159,6 +159,11 @@ curl -X DELETE "localhost:8800/memory/all?confirm=DELETE%20ALL"  # reset toàn b
 # Đồ thị memory (nodes + cạnh tương đồng, cấp dữ liệu cho trang /ui)
 curl "localhost:8800/memory/graph?include_superseded=false&min_similarity=0.35"
 
+# Chuyển máy (export/import — xem mục riêng bên dưới)
+curl -o bundle.json localhost:8800/memory/export
+curl -X POST localhost:8800/memory/import -H 'Content-Type: application/json' \
+  --data-binary @bundle.json
+
 # Gắn lại project (chỉnh sửa; slug chỉ gồm chữ thường [a-z0-9_-])
 curl -X PATCH localhost:8800/memory/facts/<id> -H 'Content-Type: application/json' \
   -d '{"project_id": "erp"}'                       # chuyển một fact
@@ -198,6 +203,26 @@ mới nhất; log tại `logs/backup.log`) — setup.sh đã cài. Chạy tay kh
 ./scripts/backup.sh    # snapshot mọi collection hermes_* vào ./backups/
 ```
 
+## Chuyển sang máy khác (export / import)
+
+Snapshot hàng đêm là **dữ liệu nhị phân, gắn chặt với embedding model** —
+chỉ khôi phục được đúng máy cũ, không mang bộ nhớ sang một bản cài mới
+(có thể chạy model khác) được. Việc đó dùng bundle chuyển máy ở mức văn bản:
+
+```bash
+# máy cũ
+./scripts/memory_transfer.sh export            # -> backups/memory-export-<stamp>.json
+
+# máy mới (sau khi chạy setup.sh, service đang chạy)
+./scripts/memory_transfer.sh import memory-export-<stamp>.json
+```
+
+Bundle chỉ chứa phần văn bản (facts, lượt chat, chunk tài liệu) — không chứa
+vector. Import sẽ **re-embed toàn bộ bằng model hiện tại**, giữ nguyên
+timestamps / liên kết supersede / cờ consolidated (nhờ đó suy giảm theo thời
+gian và nguồn gốc fact vẫn hoạt động, phiên đã import không bị chưng cất
+lại), và bỏ qua bản ghi đã tồn tại — chạy lại lần nữa vẫn an toàn.
+
 ## Cấu trúc repository
 
 ```
@@ -214,7 +239,8 @@ hermes-agent/
 │   └── on_session_start.py  # quét bù khi mở Desktop
 ├── scripts/
 │   ├── configure_hermes.py  # tự cấu hình Hermes (hooks + consent + vá serve + key + backup)
-│   └── backup.sh            # snapshot Qdrant (launchd gọi hàng đêm)
+│   ├── backup.sh            # snapshot Qdrant (launchd gọi hàng đêm)
+│   └── memory_transfer.sh   # export/import mức văn bản để chuyển máy
 └── llamaindex-service/      # memory service (FastAPI + LlamaIndex + MCP)
     └── tests/               # bộ test pytest (chạy trong container, xem bên dưới)
 ```

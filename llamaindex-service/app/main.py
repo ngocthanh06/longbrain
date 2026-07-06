@@ -2,17 +2,19 @@ import asyncio
 import json
 import re
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
-from app import config, consolidation, documents, memories, memory_store, providers, qdrant_setup, scheduler
+from app import config, consolidation, documents, memories, memory_store, providers, qdrant_setup, scheduler, transfer
 from app.mcp_server import mcp
 from app.runtime import state
 
@@ -523,6 +525,35 @@ def memory_wipe_all(confirm: str = ""):
         "messages_deleted": memory_store.delete_all_history(client),
         "facts_deleted": memories.delete_all_facts(client),
     }
+
+
+# ---------------------------------------------------------------------------
+# Transfer (device / embedding-model migration) — text-level bundles, see
+# transfer.py for why vectors are deliberately excluded.
+# ---------------------------------------------------------------------------
+@app.get("/memory/export")
+def memory_export():
+    """Download every fact, chat turn and document chunk as one JSON bundle."""
+    bundle = transfer.export_bundle(state["qdrant_client"])
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return JSONResponse(
+        bundle,
+        headers={
+            "Content-Disposition": f'attachment; filename="hermes-memory-{stamp}.json"'
+        },
+    )
+
+
+@app.post("/memory/import")
+def memory_import(bundle: dict):
+    """Re-embed and upsert a bundle produced by /memory/export. Idempotent:
+    records already present (deterministic ids / content hash) are skipped."""
+    try:
+        return transfer.import_bundle(
+            state["qdrant_client"], state["embed_model"], state["index"], bundle
+        )
+    except transfer.InvalidBundle as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

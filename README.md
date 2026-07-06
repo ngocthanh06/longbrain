@@ -157,6 +157,11 @@ curl -X DELETE "localhost:8800/memory/all?confirm=DELETE%20ALL"  # full reset
 # Memory graph (nodes + similarity edges, feeds the /ui page)
 curl "localhost:8800/memory/graph?include_superseded=false&min_similarity=0.35"
 
+# Transfer (device migration — see the dedicated section below)
+curl -o bundle.json localhost:8800/memory/export
+curl -X POST localhost:8800/memory/import -H 'Content-Type: application/json' \
+  --data-binary @bundle.json
+
 # Re-tagging (corrections; slugs are lowercase [a-z0-9_-])
 curl -X PATCH localhost:8800/memory/facts/<id> -H 'Content-Type: application/json' \
   -d '{"project_id": "erp"}'                       # move one fact
@@ -196,6 +201,26 @@ log at `logs/backup.log`) — installed by setup.sh. Manual run:
 ./scripts/backup.sh    # snapshots every hermes_* collection into ./backups/
 ```
 
+## Moving to another machine (export / import)
+
+Nightly snapshots are **binary and tied to the embedding model** — they
+restore the same machine, but they can't move memory to a new install that
+may run a different model. For that, use the text-level transfer bundle:
+
+```bash
+# old machine
+./scripts/memory_transfer.sh export            # -> backups/memory-export-<stamp>.json
+
+# new machine (after setup.sh, service running)
+./scripts/memory_transfer.sh import memory-export-<stamp>.json
+```
+
+The bundle contains payload text only (facts, chat turns, document chunks) —
+no vectors. Import **re-embeds everything with the current model**, keeps the
+original timestamps / supersede links / consolidated flags (so recall decay
+and provenance keep working, and imported sessions are not re-distilled), and
+skips records that already exist — running it twice is safe.
+
 ## Repository layout
 
 ```
@@ -212,7 +237,8 @@ hermes-agent/
 │   └── on_session_start.py  # catch-up sweep when Desktop opens
 ├── scripts/
 │   ├── configure_hermes.py  # auto-wire Hermes (hooks + consent + serve patch + key + backup)
-│   └── backup.sh            # Qdrant snapshots (called nightly by launchd)
+│   ├── backup.sh            # Qdrant snapshots (called nightly by launchd)
+│   └── memory_transfer.sh   # text-level export/import for device migration
 └── llamaindex-service/      # memory service (FastAPI + LlamaIndex + MCP)
     └── tests/               # pytest suite (runs in the container, see below)
 ```
