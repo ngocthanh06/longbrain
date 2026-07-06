@@ -68,23 +68,103 @@ def add_message(
 
 
 def get_session_project(
-    client: QdrantClient, session_id: str, user_id: str = config.USER_ID
+    client: QdrantClient,
+    session_id: str,
+    user_id: str = config.USER_ID,
+    fallback: str = config.DEFAULT_PROJECT,
 ) -> str:
     """Which project does this session belong to? Read from the session's own
-    stored messages — the hook stamped them, so recall needs no extra input."""
+    stored messages — the hook stamped them, so recall needs no extra input.
+
+    The EARLIEST turn wins, deterministically: a resumed session keeps its
+    founding project even if later turns were written while the sidebar
+    pointed elsewhere. Sessions with no stored turns return `fallback`."""
     points, _ = client.scroll(
         collection_name=config.CHAT_HISTORY_COLLECTION,
         scroll_filter=_user_filter(
             user_id,
             [qmodels.FieldCondition(key="session_id", match=qmodels.MatchValue(value=session_id))],
         ),
-        limit=1,
-        with_payload=["project_id"],
+        limit=config.CHAT_HISTORY_MAX_MESSAGES,
+        with_payload=["project_id", "timestamp"],
         with_vectors=False,
     )
-    if points:
-        return points[0].payload.get("project_id") or config.DEFAULT_PROJECT
-    return config.DEFAULT_PROJECT
+    if not points:
+        return fallback
+    points.sort(key=lambda p: p.payload.get("timestamp") or 0)
+    return points[0].payload.get("project_id") or fallback
+
+
+def resolve_append_project(
+    client: QdrantClient,
+    session_id: str,
+    hook_project: str,
+    hook_source: str,
+    user_id: str = config.USER_ID,
+) -> str:
+    """Which project should a turn being appended get?
+
+    Sessions keep their founding project (stickiness) EXCEPT when the hook's
+    tag comes from a real folder match: a changed workspace is Hermes'
+    intentional way to move a session between projects (project_switch), so
+    it wins. Ambient signals (sidebar selection, default) never re-tag an
+    existing session — that is exactly the drift stickiness exists to stop."""
+    existing = get_session_project(client, session_id, user_id, fallback="")
+    if not existing:
+        return hook_project or config.DEFAULT_PROJECT
+    if hook_source == "folder" and hook_project and hook_project != existing:
+        return hook_project
+    return existing
+
+
+def set_session_project(
+    client: QdrantClient, session_id: str, project_id: str,
+    user_id: str = config.USER_ID,
+) -> int:
+    """Re-tag every stored turn of a session (user-initiated correction from
+    the /ui browser). Returns the number of affected turns."""
+    flt = _user_filter(
+        user_id,
+        [qmodels.FieldCondition(key="session_id", match=qmodels.MatchValue(value=session_id))],
+    )
+    count = client.count(
+        collection_name=config.CHAT_HISTORY_COLLECTION, count_filter=flt, exact=True
+    ).count
+    if count:
+        client.set_payload(
+            collection_name=config.CHAT_HISTORY_COLLECTION,
+            payload={"project_id": project_id},
+            points=qmodels.FilterSelector(filter=flt),
+        )
+    return count
+
+
+def rename_project(client: QdrantClient, old: str, new: str,
+                   user_id: str = config.USER_ID) -> dict:
+    """Re-tag every record of a project across chat history, facts and
+    documents (project rename from /ui). Returns per-collection counts."""
+    counts = {}
+    for name, with_user in (
+        (config.CHAT_HISTORY_COLLECTION, True),
+        (config.MEMORIES_COLLECTION, True),
+        (config.DOCUMENTS_COLLECTION, False),  # LlamaIndex-managed payload
+    ):
+        must = [qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=old))]
+        if with_user:
+            must.insert(0, qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)))
+        flt = qmodels.Filter(must=must)
+        try:
+            n = client.count(collection_name=name, count_filter=flt, exact=True).count
+            if n:
+                client.set_payload(
+                    collection_name=name,
+                    payload={"project_id": new},
+                    points=qmodels.FilterSelector(filter=flt),
+                )
+        except Exception:
+            n = 0  # collection may not exist yet (documents before first ingest)
+        counts[name] = n
+    return counts
 
 
 def _session_points(

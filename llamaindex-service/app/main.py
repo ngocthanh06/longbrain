@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -99,6 +100,7 @@ class MemoryAppendRequest(BaseModel):
     user_message: str = ""
     assistant_response: str = ""
     project_id: str = config.DEFAULT_PROJECT  # hook resolves from Hermes sidebar via cwd
+    project_source: str = ""  # "folder" | "active" | "default" — how the hook resolved it
 
 
 class RecallRequest(BaseModel):
@@ -232,21 +234,26 @@ def memory_append(payload: MemoryAppendRequest):
     in Qdrant. Point ids are deterministic — retries are idempotent.
     """
     client, embed = state["qdrant_client"], state["embed_model"]
+    # Session stickiness with intentional-move override — see
+    # memory_store.resolve_append_project for the rules.
+    project_id = memory_store.resolve_append_project(
+        client, payload.session_id, payload.project_id, payload.project_source
+    )
     appended = 0
     if payload.user_message.strip():
         memory_store.add_message(
             client, embed, payload.session_id, "user", payload.user_message,
-            project_id=payload.project_id,
+            project_id=project_id,
         )
         appended += 1
     if payload.assistant_response.strip():
         memory_store.add_message(
             client, embed, payload.session_id, "assistant", payload.assistant_response,
-            project_id=payload.project_id,
+            project_id=project_id,
         )
         appended += 1
     meta = qdrant_setup.get_meta(client) or {}
-    return {"status": "ok", "appended": appended, "project": payload.project_id,
+    return {"status": "ok", "appended": appended, "project": project_id,
             "last_written_at": meta.get("last_written_at")}
 
 
@@ -329,6 +336,19 @@ def consolidate_pending(background_tasks: BackgroundTasks):
     return {"status": "scheduled"}
 
 
+@app.get("/memory/graph")
+def memory_graph(
+    include_superseded: bool = False, top_edges: int = 4, min_similarity: float = 0.35
+):
+    """Facts as a similarity graph (nodes + edges) for the /ui browser."""
+    return memories.graph_data(
+        state["qdrant_client"],
+        include_superseded=include_superseded,
+        top_edges=top_edges,
+        min_similarity=min_similarity,
+    )
+
+
 @app.get("/memory/facts")
 def memory_list_facts(
     project: str = "", type: str = "", include_superseded: bool = False, limit: int = 200
@@ -344,6 +364,76 @@ def memory_delete_fact(fact_id: str):
     if not memories.delete_fact(state["qdrant_client"], fact_id):
         raise HTTPException(status_code=404, detail="fact not found")
     return {"status": "deleted", "id": fact_id}
+
+
+# ---------------------------------------------------------------------------
+# Re-tagging (user corrections from the /ui browser)
+# ---------------------------------------------------------------------------
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+class ProjectRetag(BaseModel):
+    project_id: str
+
+
+def _clean_slug(value: str) -> str:
+    slug = value.strip().lower()
+    if not _SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail="project_id must be a slug: lowercase letters/digits/-/_ (max 64)",
+        )
+    return slug
+
+
+class BulkRetag(BaseModel):
+    ids: list[str]
+    project_id: str
+
+
+@app.patch("/memory/facts")
+def memory_retag_facts(payload: BulkRetag):
+    """Bulk re-tag: move many facts to a project in one call (multi-select
+    in the /ui browser)."""
+    slug = _clean_slug(payload.project_id)
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="ids must not be empty")
+    n = memories.set_facts_project(state["qdrant_client"], payload.ids, slug)
+    if not n:
+        raise HTTPException(status_code=404, detail="no matching facts")
+    return {"status": "retagged", "count": n, "project": slug}
+
+
+@app.patch("/memory/facts/{fact_id}")
+def memory_retag_fact(fact_id: str, payload: ProjectRetag):
+    slug = _clean_slug(payload.project_id)
+    if not memories.set_fact_project(state["qdrant_client"], fact_id, slug):
+        raise HTTPException(status_code=404, detail="fact not found")
+    return {"status": "retagged", "id": fact_id, "project": slug}
+
+
+@app.patch("/sessions/{session_id}/project")
+def session_retag(session_id: str, payload: ProjectRetag):
+    """Move a whole session (its turns + the facts distilled from it) to
+    another project. Future turns follow via session stickiness."""
+    slug = _clean_slug(payload.project_id)
+    client = state["qdrant_client"]
+    turns = memory_store.set_session_project(client, session_id, slug)
+    facts = memories.set_session_facts_project(client, session_id, slug)
+    if not turns and not facts:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"status": "retagged", "session_id": session_id, "project": slug,
+            "turns": turns, "facts": facts}
+
+
+@app.patch("/memory/projects/{slug}")
+def project_rename(slug: str, payload: ProjectRetag):
+    """Rename a project label across chat history, facts and documents."""
+    new = _clean_slug(payload.project_id)
+    counts = memory_store.rename_project(state["qdrant_client"], slug, new)
+    if not any(counts.values()):
+        raise HTTPException(status_code=404, detail="no records under that project")
+    return {"status": "renamed", "from": slug, "to": new, "counts": counts}
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +523,21 @@ def memory_wipe_all(confirm: str = ""):
         "messages_deleted": memory_store.delete_all_history(client),
         "facts_deleted": memories.delete_all_facts(client),
     }
+
+
+# ---------------------------------------------------------------------------
+# Memory browser UI (read-only, single self-contained page)
+# ---------------------------------------------------------------------------
+from fastapi.responses import HTMLResponse  # noqa: E402
+
+_UI_PATH = Path(__file__).parent / "ui.html"
+
+
+@app.get("/ui", response_class=HTMLResponse)
+def ui():
+    # no-store: the page is tiny and local; stale cached copies after an
+    # image rebuild are far more confusing than the re-download is costly.
+    return HTMLResponse(_UI_PATH.read_text(), headers={"Cache-Control": "no-store"})
 
 
 # MCP over Streamable HTTP. Mounted last so FastAPI's own routes win; the MCP

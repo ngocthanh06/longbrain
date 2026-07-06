@@ -56,6 +56,35 @@ restarts Hermes Desktop. Safe to re-run any number of times (idempotent).
 Verify after a few chats: `curl localhost:8800/health` — `last_written_at`
 must advance after every turn.
 
+## Memory browser (`http://localhost:8800/ui`)
+
+A self-contained page for exploring and curating stored memory — no extra
+container, no external assets, light/dark themed:
+
+- **Graph view**: memories as a force-directed graph over a camera-aligned
+  dot grid. Edges are real vector similarity (darker = closer in meaning);
+  color = project, node **shape = type** (● fact, ▲ preference, ◆ decision,
+  ■ task — the `?` button shows the legend), size = importance, dashed
+  outline = superseded. Hover highlights a node's neighborhood; click opens
+  the detail panel with a selection ripple. Drag, pan, smooth wheel zoom,
+  `Fit`, and click the title to reset the view.
+- **Spotlight search (⌘K)**: live semantic search with recent queries —
+  matches highlight on the graph and the camera glides to the best hit.
+- **Filters**: project and type chips (click to solo/toggle), a superseded
+  switch, plus link controls — a minimum-similarity slider and a
+  "same project only" toggle for the edges.
+- **Detail panel**: full text, metadata, related memories (by similarity,
+  click to jump), and the source-session transcript rendered as markdown.
+- **Corrections** (project picker modal — no manual typing): move one memory,
+  re-tag a whole session (turns + facts move, future turns follow via
+  stickiness), bulk re-tag a ⇧click multi-selection ("Select linked" expands
+  it to the whole connected cluster), or rename a project everywhere
+  (the ✎ on a project chip).
+- **List view** (same filters, as a table) and **PNG export** of the graph.
+
+Deleting is deliberately NOT offered here — forget through Hermes
+(`forget_about`) or the REST API, which have confirmation guards.
+
 ## Provider configuration (.env)
 
 | Variable | Default | Meaning |
@@ -125,6 +154,19 @@ curl "localhost:8800/memory/facts?project=erp"      # list facts
 curl -X DELETE localhost:8800/memory/facts/<id>     # forget one fact
 curl -X DELETE "localhost:8800/memory/all?confirm=DELETE%20ALL"  # full reset
 
+# Memory graph (nodes + similarity edges, feeds the /ui page)
+curl "localhost:8800/memory/graph?include_superseded=false&min_similarity=0.35"
+
+# Re-tagging (corrections; slugs are lowercase [a-z0-9_-])
+curl -X PATCH localhost:8800/memory/facts/<id> -H 'Content-Type: application/json' \
+  -d '{"project_id": "erp"}'                       # move one fact
+curl -X PATCH localhost:8800/memory/facts -H 'Content-Type: application/json' \
+  -d '{"ids": ["<id1>", "<id2>"], "project_id": "erp"}'   # bulk move
+curl -X PATCH localhost:8800/sessions/<id>/project -H 'Content-Type: application/json' \
+  -d '{"project_id": "erp"}'    # whole session: turns + facts; future turns follow
+curl -X PATCH localhost:8800/memory/projects/<slug> -H 'Content-Type: application/json' \
+  -d '{"project_id": "new-name"}'                  # rename everywhere
+
 # Sessions & projects
 curl localhost:8800/sessions
 curl localhost:8800/sessions/s1/history
@@ -136,7 +178,9 @@ curl localhost:8800/projects
 
 Memory is automatically partitioned by **Hermes Desktop sidebar project**:
 the hook reads the chat's working directory (`cwd`) → looks it up in
-`~/.hermes/projects.db` → stamps `project_id` on every record. Recall boosts
+`~/.hermes/projects.db` → stamps `project_id` on every record. When the cwd
+matches no project folder, the project currently **selected in the sidebar**
+is used — so chat-only projects work with no folder at all. Recall boosts
 same-project memories (×1.5) while cross-project knowledge can still surface
 when genuinely relevant; documents are hard-filtered by project. Creating a
 new project in the sidebar just works — zero configuration.

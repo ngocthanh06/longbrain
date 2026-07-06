@@ -46,12 +46,16 @@ def _register_tools() -> None:
         """Persist a completed conversation turn into episodic memory. Idempotent —
         safe to retry."""
         client, embed = state["qdrant_client"], state["embed_model"]
+        # Same session stickiness as REST /memory/append.
+        project_id = memory_store.get_session_project(client, session_id)
         n = 0
         if user_message.strip():
-            memory_store.add_message(client, embed, session_id, "user", user_message)
+            memory_store.add_message(client, embed, session_id, "user", user_message,
+                                     project_id=project_id)
             n += 1
         if assistant_response.strip():
-            memory_store.add_message(client, embed, session_id, "assistant", assistant_response)
+            memory_store.add_message(client, embed, session_id, "assistant", assistant_response,
+                                     project_id=project_id)
             n += 1
         return f"Stored {n} message(s) for session {session_id}."
 

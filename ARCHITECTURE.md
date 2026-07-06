@@ -184,6 +184,12 @@ between two image builds can silently diverge.
 | `POST /memory/consolidate` | Distill (requires LLM; `background: true` for hooks) |
 | `GET /memory/pending-consolidation` | Sessions awaiting distillation |
 | `GET /memory/facts` · `DELETE /memory/facts/{id}` | List / forget facts |
+| `GET /memory/graph` | Facts as nodes + similarity edges (feeds `/ui`) |
+| `GET /ui` | Memory browser (graph + list, filters, semantic search, re-tagging) |
+| `PATCH /memory/facts/{id}` | Move one fact to another project |
+| `PATCH /memory/facts` | Bulk move: `{ids: [...], project_id}` (multi-select in `/ui`) |
+| `PATCH /sessions/{id}/project` | Re-tag a whole session (turns + its facts; future turns follow) |
+| `PATCH /memory/projects/{slug}` | Rename a project across chat history, facts and documents |
 | `DELETE /sessions/{id}` | Delete an entire session |
 | `POST /ingest/text` `/ingest/file` | Ingest documents into L4 |
 | `POST /query` | Search L4 |
@@ -241,26 +247,33 @@ hermes-agent/
 ├── .env.example                 # provider/collection configuration
 ├── ARCHITECTURE.md              # this document
 ├── hooks/
-│   └── post_llm_call.py         # memory-write hook (multi-format parsing, debug log)
+│   ├── post_llm_call.py         # record each turn (project resolution: folder → active sidebar → default)
+│   ├── pre_llm_call.py          # auto-inject recalled memory into every turn
+│   ├── on_session_end.py        # trigger consolidation when a session finishes
+│   └── on_session_start.py      # debounced catch-up sweep when Desktop opens
 ├── scripts/
 │   ├── configure_hermes.py      # auto-patch config.yaml + consent + serve bug + app restart
-│   └── backup.sh                # Qdrant snapshots
+│   └── backup.sh                # Qdrant snapshots (nightly via launchd)
 ├── logs/
 │   └── hook-debug.jsonl         # raw payload of every hook run (diagnostics)
 └── llamaindex-service/
     ├── Dockerfile               # fastembed model baked in
     ├── requirements.txt         # fastembed hard-pinned ==0.7.4
+    ├── requirements-dev.txt     # pytest (see "Testing" in README)
+    ├── tests/                   # pytest suite (runs in the container)
     └── app/
-        ├── main.py              # FastAPI endpoints + lifespan + MCP mount
+        ├── main.py              # FastAPI endpoints + lifespan + MCP mount + /ui route
         ├── config.py            # env parsing, constants
         ├── providers.py         # embedding + LLM factory per provider
         ├── qdrant_setup.py      # auto-init collections/indexes + schema guard
-        ├── memory_store.py      # L2: write/read/search conversations (deterministic IDs)
-        ├── memories.py          # L3: save_facts (dedup/supersede) + recall + decay
-        ├── consolidation.py     # L2→L3 distillation (prompt + parsing)
+        ├── memory_store.py      # L2: write/read/search conversations (deterministic IDs, stickiness)
+        ├── memories.py          # L3: save_facts (dedup/supersede) + recall + decay + graph data
+        ├── consolidation.py     # L2→L3 distillation (prompt + parsing + handouts)
         ├── documents.py         # L4: document ingest + original file retention
         ├── mcp_server.py        # MCP tools (Streamable HTTP at /mcp)
-        └── runtime.py           # state shared between REST and MCP
+        ├── scheduler.py         # event-driven consolidation sweeps
+        ├── runtime.py           # state shared between REST and MCP
+        └── ui.html              # self-contained memory browser (served at /ui)
 ```
 
 ## 10. Per-project memory (project partitioning)
@@ -277,10 +290,21 @@ anchored to one or more folders). There is no separate mapping file to maintain.
 ```
 Chat in Hermes (anywhere)
   → the hook payload already contains "cwd" (the chat session's working directory)
-  → hooks/post_llm_call.py looks it up in projects.db: longest-prefix match of
-    cwd against each project's folders (child project beats parent project,
-    e.g. /work/erp beats /work) → slug; no match → "default"
+  → hooks/post_llm_call.py resolves, in priority order:
+      1. longest-prefix match of cwd against each project's folders
+         (child project beats parent, e.g. /work/erp beats /work; two projects
+         sharing a folder → the most recently created one wins, logged as a
+         conflict warning in hook-debug.jsonl)
+      2. the project currently SELECTED in the sidebar (project_meta.active_id)
+         — chat-only projects need no folder at all
+      3. "default"
   → project_id rides along with /memory/append and is stored in the payload
+  → SESSION STICKINESS (server-side): a session that already has stored turns
+    keeps its founding project — resuming an old chat while the sidebar
+    points elsewhere does not re-tag its new turns.
+    Exception: a FOLDER-sourced tag (the session's cwd really moved — Hermes'
+    project_switch tool is the intentional way to move a session between
+    projects) overrides stickiness; ambient signals (sidebar selection) never do.
 ```
 
 **Recall flow:**

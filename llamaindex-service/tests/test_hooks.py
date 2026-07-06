@@ -57,9 +57,10 @@ def projects_db(tmp_path, monkeypatch):
         """
         CREATE TABLE projects (
             id INTEGER PRIMARY KEY, slug TEXT, archived INTEGER DEFAULT 0,
-            primary_path TEXT
+            primary_path TEXT, created_at INTEGER DEFAULT 0
         );
         CREATE TABLE project_folders (project_id INTEGER, path TEXT);
+        CREATE TABLE project_meta (key TEXT PRIMARY KEY, value TEXT);
         """
     )
     work = tmp_path / "work"
@@ -68,11 +69,12 @@ def projects_db(tmp_path, monkeypatch):
     old = tmp_path / "old"
     old.mkdir()
     conn.executemany(
-        "INSERT INTO projects (id, slug, archived, primary_path) VALUES (?, ?, ?, ?)",
+        "INSERT INTO projects (id, slug, archived, primary_path, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
         [
-            (1, "work", 0, None),
-            (2, "erp", 0, None),
-            (3, "old", 1, str(old)),  # archived: must never match
+            (1, "work", 0, None, 100),
+            (2, "erp", 0, None, 200),
+            (3, "old", 1, str(old), 300),  # archived: must never match
         ],
     )
     conn.executemany(
@@ -83,6 +85,10 @@ def projects_db(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(post_llm_call, "PROJECTS_DB", db)
     return tmp_path
+
+
+def _db(projects_db):
+    return sqlite3.connect(projects_db / "projects.db")
 
 
 def test_resolve_inside_folder(projects_db):
@@ -118,3 +124,65 @@ def test_resolve_missing_db_or_empty_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr(post_llm_call, "PROJECTS_DB", tmp_path / "missing.db")
     assert post_llm_call.resolve_project("/anywhere") == "default"
     assert post_llm_call.resolve_project("") == "default"
+
+
+def test_resolve_shared_folder_newest_project_wins(projects_db):
+    # Two projects anchored to the SAME folder: the most recently created
+    # one wins deterministically (not SQL row order).
+    conn = _db(projects_db)
+    conn.execute(
+        "INSERT INTO projects (id, slug, archived, primary_path, created_at)"
+        " VALUES (4, 'work2', 0, NULL, 999)"
+    )
+    conn.execute(
+        "INSERT INTO project_folders (project_id, path) VALUES (4, ?)",
+        (str(projects_db / "work"),),
+    )
+    conn.commit(); conn.close()
+    assert post_llm_call.resolve_project(str(projects_db / "work" / "x")) == "work2"
+
+
+def test_resolve_falls_back_to_active_sidebar_project(projects_db):
+    conn = _db(projects_db)
+    conn.execute("INSERT INTO project_meta (key, value) VALUES ('active_id', '2')")
+    conn.commit(); conn.close()
+    # cwd matches no folder → the project selected in the sidebar wins.
+    assert post_llm_call.resolve_project(str(projects_db / "elsewhere")) == "erp"
+    # empty cwd also falls back to the active project
+    assert post_llm_call.resolve_project("") == "erp"
+
+
+def test_resolve_folder_match_beats_active_project(projects_db):
+    conn = _db(projects_db)
+    conn.execute("INSERT INTO project_meta (key, value) VALUES ('active_id', '2')")
+    conn.commit(); conn.close()
+    # cwd inside `work`: the per-chat folder signal outranks the global selection.
+    assert post_llm_call.resolve_project(str(projects_db / "work" / "docs")) == "work"
+
+
+def test_resolve_archived_active_project_ignored(projects_db):
+    conn = _db(projects_db)
+    conn.execute("INSERT INTO project_meta (key, value) VALUES ('active_id', '3')")
+    conn.commit(); conn.close()
+    assert post_llm_call.resolve_project(str(projects_db / "elsewhere")) == "default"
+
+
+def test_resolve_source_reflects_signal(projects_db):
+    slug, src = post_llm_call.resolve_project_with_source(str(projects_db / "work"))
+    assert (slug, src) == ("work", "folder")
+    slug, src = post_llm_call.resolve_project_with_source(str(projects_db / "elsewhere"))
+    assert (slug, src) == ("default", "default")
+    conn = _db(projects_db)
+    conn.execute("INSERT INTO project_meta (key, value) VALUES ('active_id', '2')")
+    conn.commit(); conn.close()
+    slug, src = post_llm_call.resolve_project_with_source(str(projects_db / "elsewhere"))
+    assert (slug, src) == ("erp", "active")
+
+
+def test_resolve_without_project_meta_table(projects_db):
+    conn = _db(projects_db)
+    conn.execute("DROP TABLE project_meta")
+    conn.commit(); conn.close()
+    # older Hermes without project_meta: folder matching keeps working.
+    assert post_llm_call.resolve_project(str(projects_db / "work")) == "work"
+    assert post_llm_call.resolve_project(str(projects_db / "elsewhere")) == "default"

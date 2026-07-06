@@ -29,12 +29,27 @@ PROJECTS_DB = Path.home() / ".hermes" / "projects.db"
 
 
 def resolve_project(cwd: str) -> str:
-    """Map the turn's cwd to a Hermes sidebar project (longest folder-prefix
-    wins, so a session in /work/erp beats the broader /work project). Reads
-    Hermes' own projects.db read-only — sidebar is the single source of truth,
-    no separate mapping to maintain. Falls back to "default"."""
-    if not cwd or not PROJECTS_DB.exists():
-        return "default"
+    return resolve_project_with_source(cwd)[0]
+
+
+def resolve_project_with_source(cwd: str) -> tuple:
+    """Map a turn to a Hermes sidebar project. Returns (slug, source) where
+    source records WHICH signal produced the slug — "folder" | "active" |
+    "default". The service uses it: a folder-sourced tag is an intentional
+    workspace (project_switch moved the session there) and may re-tag an
+    existing session; ambient signals never do. Signals, in priority order:
+
+    1. cwd folder match — longest folder-prefix wins (a session in /work/erp
+       beats the broader /work project); equal-length conflicts go to the
+       most recently created project instead of undefined SQL row order.
+    2. the project currently SELECTED in the sidebar (project_meta.active_id)
+       — so chat-only projects with no folder still tag correctly.
+    3. "default".
+
+    Reads Hermes' own projects.db read-only — the sidebar is the single
+    source of truth, no separate mapping to maintain."""
+    if not PROJECTS_DB.exists():
+        return "default", "default"
     try:
         try:
             conn = sqlite3.connect(f"file:{PROJECTS_DB}?mode=ro", uri=True, timeout=1)
@@ -45,27 +60,45 @@ def resolve_project(cwd: str) -> str:
             # and WAL allows concurrent reads.
             conn = sqlite3.connect(str(PROJECTS_DB), timeout=1)
         rows = conn.execute(
-            "SELECT p.slug, f.path FROM project_folders f"
+            "SELECT p.slug, f.path, p.created_at FROM project_folders f"
             " JOIN projects p ON p.id = f.project_id WHERE p.archived = 0"
             " UNION"
-            " SELECT slug, primary_path FROM projects"
+            " SELECT slug, primary_path, created_at FROM projects"
             " WHERE archived = 0 AND primary_path IS NOT NULL"
         ).fetchall()
+        try:
+            active_row = conn.execute(
+                "SELECT p.slug FROM project_meta m JOIN projects p ON p.id = m.value"
+                " WHERE m.key = 'active_id' AND p.archived = 0"
+            ).fetchone()
+        except sqlite3.Error:  # older Hermes without project_meta
+            active_row = None
         conn.close()
     except Exception:
-        return "default"
+        return "default", "default"
 
-    # realpath (not normpath): a cwd reached through a symlink must still
-    # match the project folder it points to.
-    cwd_norm = os.path.realpath(cwd)
-    best, best_len = "default", -1
-    for slug, path in rows:
-        if not path:
-            continue
-        p = os.path.realpath(path)
-        if (cwd_norm == p or cwd_norm.startswith(p + os.sep)) and len(p) > best_len:
-            best, best_len = slug, len(p)
-    return best
+    best, best_len, best_created = "", -1, -1
+    if cwd:
+        # realpath (not normpath): a cwd reached through a symlink must still
+        # match the project folder it points to.
+        cwd_norm = os.path.realpath(cwd)
+        for slug, path, created in rows:
+            if not path:
+                continue
+            p = os.path.realpath(path)
+            if cwd_norm == p or cwd_norm.startswith(p + os.sep):
+                if len(p) > best_len or (len(p) == best_len and (created or 0) > best_created):
+                    if len(p) == best_len and best:
+                        _debug_dump(json.dumps({
+                            "warn": "project folder conflict",
+                            "path": p, "losing": best, "winning": slug,
+                        }))
+                    best, best_len, best_created = slug, len(p), (created or 0)
+    if best:
+        return best, "folder"
+    if active_row and active_row[0]:
+        return active_row[0], "active"
+    return "default", "default"
 
 
 def _debug_dump(raw: str) -> None:
@@ -127,12 +160,14 @@ def main():
     if not user_message and not assistant_response:
         return
 
+    project_id, project_source = resolve_project_with_source(payload.get("cwd") or "")
     body = json.dumps(
         {
             "session_id": session_id,
             "user_message": user_message,
             "assistant_response": assistant_response,
-            "project_id": resolve_project(payload.get("cwd") or ""),
+            "project_id": project_id,
+            "project_source": project_source,
         }
     ).encode()
 

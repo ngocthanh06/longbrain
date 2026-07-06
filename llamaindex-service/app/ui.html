@@ -1,0 +1,1304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes Memory Graph</title>
+<style>
+  :root {
+    color-scheme: light;
+    --glow: rgba(42,120,214,.05);
+    --surface-1: #fcfcfb;
+    --surface-2: #f0efec;
+    --surface-3: #e7e6e2;
+    --border: #dcdbd6;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #8a8984;
+    --edge: #b9b8b2;
+    --accent: #2a78d6;
+    --shadow: 0 8px 30px rgba(0,0,0,.12);
+    --s1: #2a78d6; --s2: #1baf7a; --s3: #eda100; --s4: #008300;
+    --s5: #4a3aa7; --s6: #e34948; --s7: #e87ba4; --s8: #eb6834;
+    --other: #8a8984;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --glow: rgba(57,135,229,.08);
+      --surface-1: #1a1a19;
+      --surface-2: #262624;
+      --surface-3: #313130;
+      --border: #3a3a37;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8a8984;
+      --edge: #4a4a46;
+      --accent: #3987e5;
+      --shadow: 0 8px 30px rgba(0,0,0,.5);
+      --s1: #3987e5; --s2: #199e70; --s3: #c98500; --s4: #008300;
+      --s5: #9085e9; --s6: #e66767; --s7: #d55181; --s8: #d95926;
+      --other: #8a8984;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --glow: rgba(42,120,214,.05);
+    --surface-1: #fcfcfb; --surface-2: #f0efec; --surface-3: #e7e6e2;
+    --border: #dcdbd6; --text-primary: #0b0b0b; --text-secondary: #52514e;
+    --text-muted: #8a8984; --edge: #b9b8b2; --accent: #2a78d6;
+    --shadow: 0 8px 30px rgba(0,0,0,.12);
+    --s1: #2a78d6; --s2: #1baf7a; --s3: #eda100; --s4: #008300;
+    --s5: #4a3aa7; --s6: #e34948; --s7: #e87ba4; --s8: #eb6834;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --glow: rgba(57,135,229,.08);
+    --surface-1: #1a1a19; --surface-2: #262624; --surface-3: #313130;
+    --border: #3a3a37; --text-primary: #ffffff; --text-secondary: #c3c2b7;
+    --text-muted: #8a8984; --edge: #4a4a46; --accent: #3987e5;
+    --shadow: 0 8px 30px rgba(0,0,0,.5);
+    --s1: #3987e5; --s2: #199e70; --s3: #c98500; --s4: #008300;
+    --s5: #9085e9; --s6: #e66767; --s7: #d55181; --s8: #d95926;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--surface-1); color: var(--text-primary);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 14px; font-weight: 650; letter-spacing: -.01em; margin-right: 8px; cursor: pointer; }
+  header h1:hover { color: var(--accent); }
+  #searchBtn {
+    flex: 1; min-width: 160px; max-width: 380px; text-align: left;
+    background: var(--surface-2); color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px;
+    cursor: pointer; font-size: 12.5px; display: flex; align-items: center; gap: 8px;
+    transition: border-color .15s;
+  }
+  #searchBtn:hover { border-color: var(--text-muted); }
+  #searchBtn kbd {
+    margin-left: auto; background: var(--surface-3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-size: 10.5px; font-family: inherit;
+    color: var(--text-muted);
+  }
+  .btn {
+    background: var(--surface-2); color: var(--text-secondary);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer; font-size: 12.5px;
+    transition: border-color .15s, transform .1s;
+  }
+  .btn:hover { border-color: var(--text-muted); }
+  .btn:active { transform: scale(.97); }
+  .btn.active { color: var(--text-primary); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  label.toggle { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12.5px; cursor: pointer; }
+  #chips {
+    display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+    padding: 8px 16px; border-bottom: 1px solid var(--border);
+  }
+  .chip-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .chip-group .glabel { color: var(--text-muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 3px 11px; cursor: pointer;
+    color: var(--text-secondary); user-select: none; -webkit-user-select: none;
+    transition: border-color .15s, opacity .2s, transform .1s;
+  }
+  .chip:active { transform: scale(.96); }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .chip .n { color: var(--text-muted); font-size: 11px; }
+  .chip .edit { color: var(--text-muted); font-size: 11px; padding: 0 2px; visibility: hidden; }
+  .chip:hover .edit { visibility: visible; }
+  .chip .edit:hover { color: var(--text-primary); }
+  .chip.off { opacity: .35; }
+  .chip:hover { border-color: var(--text-muted); }
+  main { flex: 1; position: relative; overflow: hidden; min-height: 0; }
+  /* explicit sides + 100% size, NOT `inset:0` — embedded/older WebViews
+     don't support the shorthand and collapse the canvas to 300x150 */
+  #canvas {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%; height: 100%; display: block; cursor: grab;
+    background: radial-gradient(ellipse 90% 70% at 50% 32%, var(--glow), transparent 65%);
+  }
+  #canvas.dragging { cursor: grabbing; }
+  #empty {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; max-width: 420px; display: none; z-index: 3;
+  }
+  #empty .big { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  #empty p { color: var(--text-secondary); margin-bottom: 12px; }
+  #legend {
+    position: absolute; top: 12px; right: 12px; z-index: 8; display: none;
+    max-width: 320px; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow); padding: 12px 14px;
+  }
+  #legend .lg-title { font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 8px; }
+  #legend .lg-row { display: flex; gap: 8px; margin-bottom: 6px; color: var(--text-secondary); }
+  #legend .lg-row b { color: var(--text-primary); }
+  #legend .lg-glyph { flex: none; width: 16px; text-align: center; }
+  #legend .lg-sep { border-top: 1px solid var(--border); margin: 8px 0; }
+  #tooltip {
+    position: absolute; pointer-events: none; display: none; max-width: 340px;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; box-shadow: var(--shadow); z-index: 5;
+  }
+  #tooltip .t-text { color: var(--text-primary); }
+  #tooltip .t-meta { color: var(--text-muted); font-size: 11.5px; margin-top: 5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--surface-3); border-radius: 5px; padding: 1px 6px;
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-secondary);
+  }
+  #panel {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 360px; max-width: 88%;
+    background: var(--surface-1); border-left: 1px solid var(--border);
+    padding: 16px; overflow-y: auto; display: none; z-index: 6;
+    box-shadow: var(--shadow);
+  }
+  #panel h2 { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin: 14px 0 8px; }
+  #panel h2:first-of-type { margin-top: 0; }
+  #panel .fact-text { font-size: 14px; line-height: 1.55; margin-bottom: 12px; white-space: pre-wrap; }
+  #panel table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+  #panel td { padding: 4px 0; vertical-align: top; }
+  #panel td:first-child { color: var(--text-muted); width: 90px; }
+  #panel .actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+  #panel .close { position: absolute; top: 12px; right: 14px; background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+  .rel {
+    display: flex; align-items: center; gap: 8px; padding: 7px 8px;
+    border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .rel:hover { border-color: var(--text-muted); background: var(--surface-2); }
+  .rel .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .rel .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rel .w { color: var(--text-muted); font-size: 11px; flex: none; }
+  #transcript { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+  #transcript .turn { margin-bottom: 10px; }
+  #transcript .role { color: var(--text-muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  #transcript code {
+    background: var(--surface-3); border-radius: 4px; padding: 1px 5px;
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #transcript pre {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; overflow-x: auto; margin: 6px 0;
+  }
+  #transcript pre code { background: none; padding: 0; display: block; white-space: pre; }
+  .md-h { font-weight: 650; display: inline-block; margin-top: 6px; }
+  .md-li { display: block; padding-left: 10px; }
+  #bulkbar {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 8px; z-index: 7;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow);
+  }
+  #bulkbar .count { font-weight: 600; margin-right: 4px; }
+  #list {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%; height: 100%; overflow: auto; display: none;
+    padding: 12px 16px; z-index: 4; background: var(--surface-1);
+  }
+  #list table { width: 100%; border-collapse: collapse; }
+  #list th {
+    text-align: left; color: var(--text-muted); font-weight: 600; font-size: 10.5px;
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    position: sticky; top: -12px; background: var(--surface-1);
+  }
+  #list td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  #list tr:hover td { background: var(--surface-2); cursor: pointer; }
+  #list .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  footer {
+    display: flex; gap: 16px; padding: 6px 16px; border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 11px;
+  }
+  .ghosted { opacity: .4; }
+  /* Spotlight */
+  #spot {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,.35); z-index: 50; display: none;
+  }
+  #spotBox {
+    width: min(560px, 92vw); margin: 12vh auto 0;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
+  }
+  #spotInput {
+    width: 100%; border: none; outline: none; background: transparent;
+    color: var(--text-primary); font: 16px/1.4 inherit; padding: 15px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  #spotList { max-height: 46vh; overflow-y: auto; padding: 6px; }
+  .spot-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    border-radius: 9px; cursor: pointer;
+  }
+  .spot-row.focused, .spot-row:hover { background: var(--surface-2); }
+  .spot-row .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .spot-row .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spot-row .meta { color: var(--text-muted); font-size: 11px; flex: none; }
+  .spot-section { color: var(--text-muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px 4px; }
+  #spotHint { color: var(--text-muted); font-size: 11px; padding: 8px 14px; border-top: 1px solid var(--border); }
+  input[type=range] { accent-color: var(--accent); width: 96px; vertical-align: middle; }
+  /* Modal (project picker / rename) */
+  #modal {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,.35); z-index: 60; display: none;
+  }
+  #modalBox {
+    width: min(420px, 92vw); margin: 16vh auto 0;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: var(--shadow); padding: 16px;
+  }
+  #modalTitle { font-weight: 650; font-size: 14px; margin-bottom: 4px; }
+  #modalMsg { color: var(--text-secondary); margin-bottom: 12px; }
+  #modalOptions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; max-height: 220px; overflow-y: auto; }
+  #modalOptions .opt {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+  }
+  #modalOptions .opt:hover { background: var(--surface-2); }
+  #modalOptions .opt.current { border-color: var(--accent); }
+  #modalOptions .opt .dot { width: 9px; height: 9px; border-radius: 50%; }
+  #modalInput {
+    width: 100%; background: var(--surface-2); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px;
+  }
+  #modalBtns { display: flex; justify-content: flex-end; gap: 8px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #toast {
+    position: fixed; bottom: 18px; right: 18px; max-width: 340px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; box-shadow: var(--shadow);
+    z-index: 70; display: none;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="homeTitle" title="Reset view (clear selection & fit)">Hermes Memory Graph</h1>
+  <button id="searchBtn"><span>🔍</span> Search memories… <kbd>⌘K</kbd></button>
+  <button class="btn active" id="viewGraph">Graph</button>
+  <button class="btn" id="viewList">List</button>
+  <button class="btn" id="fitBtn" title="Fit graph to window">Fit</button>
+  <button class="btn" id="exportBtn" title="Export current view as PNG">PNG</button>
+  <button class="btn" id="themeBtn" title="Theme: auto / light / dark">◐ auto</button>
+  <button class="btn" id="legendBtn" title="What do the shapes and colors mean?">?</button>
+  <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
+</header>
+<div id="chips">
+  <div class="chip-group" id="projectChips"><span class="glabel">Project</span></div>
+  <div class="chip-group" id="typeChips"><span class="glabel">Type</span></div>
+  <div class="chip-group">
+    <span class="glabel">Links</span>
+    <input type="range" id="edgeMin" min="0.35" max="0.9" step="0.05" value="0.35">
+    <span class="n" id="edgeMinVal" style="color:var(--text-muted)">≥ 0.35</span>
+    <label class="toggle"><input type="checkbox" id="sameProj"> same project only</label>
+  </div>
+</div>
+<main>
+  <canvas id="canvas"></canvas>
+  <div id="empty">
+    <div class="big" id="emptyTitle">Nothing to show</div>
+    <p id="emptyMsg"></p>
+    <button class="btn" id="emptyReset" style="display:none">Reset filters</button>
+  </div>
+  <div id="legend">
+    <div class="lg-title">Legend</div>
+    <div class="lg-row"><span class="lg-glyph">●</span><b>fact</b> — objective info worth keeping (names, stack, deadlines, constraints)</div>
+    <div class="lg-row"><span class="lg-glyph">▲</span><b>preference</b> — how you like things done (style, tools, workflow)</div>
+    <div class="lg-row"><span class="lg-glyph">◆</span><b>decision</b> — a choice that was settled</div>
+    <div class="lg-row"><span class="lg-glyph">■</span><b>task</b> — a commitment or something still to do</div>
+    <div class="lg-sep"></div>
+    <div class="lg-row"><span class="lg-glyph" style="color:var(--accent)">⬤</span><b>color</b> = project · <b>size</b> = importance</div>
+    <div class="lg-row"><span class="lg-glyph">◌</span>dashed outline = superseded (replaced by a newer memory)</div>
+    <div class="lg-row"><span class="lg-glyph">⟋</span>edge = semantic similarity — darker means closer in meaning</div>
+  </div>
+  <div id="tooltip"></div>
+  <div id="list"></div>
+  <div id="bulkbar">
+    <span class="count" id="bulkCount"></span>
+    <button class="btn" id="bulkLinked" title="Expand selection to every connected memory">Select linked</button>
+    <button class="btn" id="bulkRetag">Re-tag all…</button>
+    <button class="btn" id="bulkClear">Clear</button>
+  </div>
+  <aside id="panel">
+    <button class="close" id="panelClose" title="Close">×</button>
+    <h2>Memory</h2>
+    <div class="fact-text" id="pText"></div>
+    <table><tbody id="pMeta"></tbody></table>
+    <div class="actions">
+      <button class="btn" id="pFilterProject">Filter this project</button>
+      <button class="btn" id="pLoadSession">View source session</button>
+      <button class="btn" id="pRetagFact">Change project…</button>
+      <button class="btn" id="pRetagSession">Re-tag whole session…</button>
+      <button class="btn" id="pSelectGroup">Select linked group</button>
+    </div>
+    <h2>Related memories</h2>
+    <div id="pRelated"></div>
+    <div id="transcript"></div>
+  </aside>
+</main>
+<footer>
+  <span id="statCounts">–</span>
+  <span id="statWritten"></span>
+  <span style="margin-left:auto">drag to pan · wheel to zoom · click = details · ⇧click = multi-select</span>
+</footer>
+
+<div id="spot">
+  <div id="spotBox">
+    <input id="spotInput" placeholder="Search memories semantically…" autocomplete="off">
+    <div id="spotList"></div>
+    <div id="spotHint">↑↓ navigate · Enter jump · Esc close</div>
+  </div>
+</div>
+
+<div id="modal">
+  <div id="modalBox">
+    <div id="modalTitle"></div>
+    <div id="modalMsg"></div>
+    <div id="modalOptions"></div>
+    <input id="modalInput" autocomplete="off">
+    <div id="modalBtns">
+      <button class="btn" id="modalCancel">Cancel</button>
+      <button class="btn primary" id="modalOk">Apply</button>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const canvas = $("canvas"), ctx = canvas.getContext("2d");
+const TYPES = ["fact", "preference", "decision", "task"];
+const TYPE_GLYPH = { fact: "●", preference: "▲", decision: "◆", task: "■" };
+const SLOTS = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+
+let nodes = [], edges = [], adj = new Map(), edgesByNode = new Map(), nodeById = new Map();
+let multiSel = new Set();   // ids picked with shift+click for bulk actions
+let projectColor = new Map();          // slug -> css var name (fixed once)
+let lastSlugs = [];
+let selProjects = new Set(), selTypes = new Set(TYPES);
+let selected = null, hovered = null, highlight = null;   // highlight: Set of ids from search
+let cam = { x: 0, y: 0, k: 1 };
+let camTarget = null;  // when set, the camera glides toward it each frame
+let alpha = 0, dragging = null, panning = false, lastMouse = null, fitted = true;
+let ripple = null;     // {node, t} selection ripple animation
+let css = {};
+// Perf: cached view size (getBoundingClientRect per node per frame forces
+// layout and is the main jank source), cached visible sets, and a dirty flag
+// so idle frames skip drawing entirely.
+let viewW = 0, viewH = 0;
+let visNodes = [], visEdges = [];
+let needsRender = true, hoverEasing = false;
+let edgeMin = 0.35, sameProjOnly = false;  // link display filters
+function invalidate() { needsRender = true; }
+
+function readCss() {
+  const s = getComputedStyle(document.documentElement);
+  css = {};
+  for (const v of [...SLOTS, "--other", "--edge", "--text-primary", "--text-secondary",
+                   "--text-muted", "--surface-1", "--accent"])
+    css[v] = s.getPropertyValue(v).trim();
+}
+readCss();
+try {
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  // invalidate() is essential: with on-demand rendering, skipping it leaves
+  // the canvas showing the OLD theme's colors (white labels on a now-light
+  // background) until the next interaction.
+  const onChange = () => { readCss(); buildChips(lastSlugs); renderList(); invalidate(); };
+  if (mq.addEventListener) mq.addEventListener("change", onChange);
+  else if (mq.addListener) mq.addListener(onChange);  // older Safari
+} catch (e) { /* theme follows manual toggle only */ }
+
+function colorOf(n) { return css[projectColor.get(n.project_id) || "--other"]; }
+function fmtDate(ts) { return ts ? new Date(ts * 1000).toISOString().slice(0, 10) : "?"; }
+function radius(n) { return 6 + (n.importance || 0.5) * 8; }
+function visible(n) { return selProjects.has(n.project_id) && selTypes.has(n.type); }
+
+function rebuildVisible() {
+  visNodes = nodes.filter(visible);
+  visEdges = edges.filter(e =>
+    e.a && e.b && visible(e.a) && visible(e.b) &&
+    e.weight >= edgeMin &&
+    (!sameProjOnly || e.a.project_id === e.b.project_id));
+  // Adjacency follows the DISPLAYED edges, so hover-highlight and
+  // "Select linked" respect the link filters above.
+  adj = new Map();
+  for (const e of visEdges) {
+    if (!adj.has(e.source)) adj.set(e.source, new Set());
+    if (!adj.has(e.target)) adj.set(e.target, new Set());
+    adj.get(e.source).add(e.target); adj.get(e.target).add(e.source);
+  }
+  invalidate();
+}
+
+// -------------------------------------------------------------------- data
+async function load() {
+  const inc = $("showSuperseded").checked;
+  const data = await (await fetch(`/memory/graph?include_superseded=${inc}`)).json();
+  const old = new Map(nodes.map(n => [n.id, n]));
+  const spread = 60 * Math.sqrt(data.nodes.length + 1);  // scale with graph size
+  nodes = data.nodes.map(n => {
+    const prev = old.get(n.id);
+    const a = Math.random() * Math.PI * 2, r = spread * (0.4 + Math.random());
+    return Object.assign(n, {
+      x: prev ? prev.x : Math.cos(a) * r, y: prev ? prev.y : Math.sin(a) * r,
+      vx: 0, vy: 0, hs: 0,
+    });
+  });
+  edges = data.edges;
+  edgesByNode = new Map();  // ALL semantic relations (panel list); adj = displayed only
+  nodeById = new Map(nodes.map(n => [n.id, n]));
+  for (const e of edges) {
+    e.a = nodeById.get(e.source); e.b = nodeById.get(e.target);
+    for (const id of [e.source, e.target]) {
+      if (!edgesByNode.has(id)) edgesByNode.set(id, []);
+      edgesByNode.get(id).push(e);
+    }
+  }
+  // Fixed-order color assignment: alphabetical over the FULL dataset, never
+  // re-assigned by filters; projects beyond 8 fold into the neutral slot.
+  const slugs = [...new Set(nodes.map(n => n.project_id))].sort();
+  for (const slug of slugs) {
+    if (!projectColor.has(slug)) {
+      selProjects.add(slug);  // newly seen projects start visible
+      projectColor.set(slug, projectColor.size < 8 ? SLOTS[projectColor.size] : "--other");
+    }
+  }
+  lastSlugs = slugs;
+  multiSel = new Set([...multiSel].filter(id => nodeById.has(id)));  // drop stale ids
+  updateBulkbar();
+  rebuildVisible();
+  buildChips(slugs);
+  renderList();
+  updateStats();
+  alpha = 1;
+  fitted = false;  // auto-fit once the layout settles
+}
+
+function buildChips(slugs) {
+  const pc = $("projectChips");
+  pc.querySelectorAll(".chip").forEach(c => c.remove());
+  for (const slug of slugs) {
+    const count = nodes.filter(n => n.project_id === slug).length;
+    const chip = document.createElement("span");
+    chip.className = "chip" + (selProjects.has(slug) ? "" : " off");
+    chip.dataset.slug = slug;
+    chip.innerHTML = `<span class="dot" style="background:${css[projectColor.get(slug)]}"></span>${escapeHtml(slug)} <span class="n">${count}</span><span class="edit" title="Rename project">✎</span>`;
+    chip.onclick = () => { toggleSet(selProjects, slug, slugs); refreshChips(); };
+    chip.querySelector(".edit").onclick = e => { e.stopPropagation(); renameProject(slug); };
+    pc.appendChild(chip);
+  }
+  const tc = $("typeChips");
+  tc.querySelectorAll(".chip").forEach(c => c.remove());
+  for (const t of TYPES) {
+    const count = nodes.filter(n => n.type === t).length;
+    const chip = document.createElement("span");
+    chip.className = "chip" + (selTypes.has(t) ? "" : " off");
+    chip.dataset.type = t;
+    chip.innerHTML = `${TYPE_GLYPH[t]} ${t} <span class="n">${count}</span>`;
+    chip.onclick = () => { toggleSet(selTypes, t, TYPES); refreshChips(); };
+    tc.appendChild(chip);
+  }
+}
+
+function toggleSet(set, value, all) {
+  // Click = solo when everything is on; otherwise toggle; never allow empty.
+  if (set.size === (all.length || all.size) && set.has(value)) { set.clear(); set.add(value); }
+  else if (set.has(value) && set.size > 1) set.delete(value);
+  else if (set.has(value)) { for (const v of all) set.add(v); }
+  else set.add(value);
+  rebuildVisible(); renderList(); updateStats(); alpha = Math.max(alpha, .3); fitted = false;
+}
+
+function refreshChips() {
+  $("projectChips").querySelectorAll(".chip").forEach(c => {
+    c.classList.toggle("off", !selProjects.has(c.dataset.slug));
+  });
+  $("typeChips").querySelectorAll(".chip").forEach(c => {
+    c.classList.toggle("off", !selTypes.has(c.dataset.type));
+  });
+}
+
+function updateStats() {
+  $("statCounts").textContent =
+    `${visNodes.length}/${nodes.length} memories · ${visEdges.length} links`;
+  updateEmpty(visNodes.length);
+  fetch("/health").then(r => r.json()).then(h => {
+    if (h.last_written_at)
+      $("statWritten").textContent = "last write: " + new Date(h.last_written_at * 1000).toLocaleString();
+  }).catch(() => {});
+}
+
+function updateEmpty(visCount) {
+  const el = $("empty");
+  if (nodes.length === 0) {
+    el.style.display = "block";
+    $("emptyTitle").textContent = "No memories yet";
+    $("emptyMsg").textContent =
+      "Chat in Hermes Desktop — every conversation is recorded and distilled " +
+      "into memories, which appear here. Check the pipeline is writing: " +
+      "curl localhost:8800/health";
+    $("emptyReset").style.display = "none";
+  } else if (visCount === 0) {
+    el.style.display = "block";
+    $("emptyTitle").textContent = "Nothing matches";
+    $("emptyMsg").textContent = "No memories match the current filters.";
+    $("emptyReset").style.display = "";
+  } else {
+    el.style.display = "none";
+  }
+}
+$("emptyReset").onclick = () => {
+  selProjects = new Set(lastSlugs); selTypes = new Set(TYPES);
+  refreshChips(); rebuildVisible(); renderList(); updateStats();
+  alpha = Math.max(alpha, .3); fitted = false;
+};
+
+// -------------------------------------------------------------- simulation
+function step() {
+  if (alpha < 0.003) { autoFit(); return; }
+  const vis = visNodes;
+  // Repulsion grows with graph size so bigger graphs spread instead of clumping.
+  const charge = 2500 + 80 * vis.length;
+  // Dense graphs: shrink the interaction radius — far-field repulsion is
+  // negligible vs springs/gravity but dominates the O(n²) cost.
+  const cutoff = vis.length > 150 ? 90000 : 640000;
+  for (let i = 0; i < vis.length; i++) {
+    const a = vis[i];
+    for (let j = i + 1; j < vis.length; j++) {
+      const b = vis[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy || 1;
+      if (d2 > cutoff) continue;
+      const f = charge / d2 * alpha;
+      const d = Math.sqrt(d2);
+      dx /= d; dy /= d;
+      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+    }
+  }
+  for (const e of visEdges) {
+    const ideal = 90 + (1 - e.weight) * 260;
+    let dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = (d - ideal) * 0.02 * alpha;
+    dx /= d; dy /= d;
+    e.a.vx += dx * f; e.a.vy += dy * f; e.b.vx -= dx * f; e.b.vy -= dy * f;
+  }
+  for (const n of vis) {
+    // Gentle centering, weighted by importance: important memories gravitate
+    // toward the middle of the map, peripheral ones drift outward.
+    const g = 0.0003 + 0.0004 * (n.importance || 0.5);
+    n.vx -= n.x * g * alpha; n.vy -= n.y * g * alpha;
+    if (dragging === n) { n.vx = n.vy = 0; continue; }
+    n.x += n.vx; n.y += n.vy; n.vx *= 0.88; n.vy *= 0.88;
+  }
+  alpha *= 0.985;
+}
+
+function autoFit() {
+  if (fitted) return;
+  fitted = true;
+  fitView();
+}
+
+function fitView() {
+  const vis = visNodes;
+  if (!vis.length) return;
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (const n of vis) {
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  }
+  const pad = 70;
+  camTarget = {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+    k: Math.min(
+      2.2,
+      Math.max(0.2, Math.min(
+        (viewW - pad * 2) / Math.max(maxX - minX, 1),
+        (viewH - pad * 2) / Math.max(maxY - minY, 1),
+      ))
+    ),
+  };
+}
+
+function glideCamera() {
+  if (!camTarget) return;
+  cam.x += (camTarget.x - cam.x) * 0.18;
+  cam.y += (camTarget.y - cam.y) * 0.18;
+  cam.k += (camTarget.k - cam.k) * 0.18;
+  if (Math.abs(camTarget.x - cam.x) < 0.5 && Math.abs(camTarget.y - cam.y) < 0.5 &&
+      Math.abs(camTarget.k - cam.k) < 0.005) {
+    cam.x = camTarget.x; cam.y = camTarget.y; cam.k = camTarget.k;
+    camTarget = null;
+  }
+}
+
+// ------------------------------------------------------------------ render
+function resize() {
+  const dpr = devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  if (r.width < 5 || r.height < 5) { requestAnimationFrame(resize); return; }
+  viewW = r.width; viewH = r.height;
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  invalidate();
+}
+addEventListener("resize", resize);
+// The canvas box also changes when the chip rows wrap or the panel opens —
+// window "resize" alone leaves a stale (cropped) buffer behind.
+new ResizeObserver(resize).observe(document.querySelector("main"));
+
+// Cached view size — calling getBoundingClientRect here (per node, per frame)
+// forces synchronous layout and was the main source of jank on big graphs.
+function worldToScreen(x, y) {
+  return [viewW / 2 + (x - cam.x) * cam.k, viewH / 2 + (y - cam.y) * cam.k];
+}
+function screenToWorld(sx, sy) {
+  return [(sx - viewW / 2) / cam.k + cam.x, (sy - viewH / 2) / cam.k + cam.y];
+}
+
+function drawShape(x, y, r, type) {
+  ctx.beginPath();
+  if (type === "decision") {          // diamond
+    ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
+    ctx.closePath();
+  } else if (type === "task") {       // (rounded) square
+    const s = r * 0.88;
+    if (ctx.roundRect) ctx.roundRect(x - s, y - s, s * 2, s * 2, r * 0.35);
+    else ctx.rect(x - s, y - s, s * 2, s * 2);
+  } else if (type === "preference") { // triangle
+    ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.95, y + r * 0.78); ctx.lineTo(x - r * 0.95, y + r * 0.78);
+    ctx.closePath();
+  } else {                            // fact: circle
+    ctx.arc(x, y, r, 0, 7);
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, viewW, viewH);
+  // Camera-aligned dot grid: a spatial anchor so panning/zooming reads as
+  // moving over a surface instead of floating in a void.
+  let spacing = 56 * cam.k;
+  while (spacing < 18) spacing *= 2;  // keep density sane when zoomed out
+  const gx0 = ((viewW / 2 - cam.x * cam.k) % spacing + spacing) % spacing;
+  const gy0 = ((viewH / 2 - cam.y * cam.k) % spacing + spacing) % spacing;
+  ctx.globalAlpha = 0.3;
+  ctx.fillStyle = css["--edge"];
+  ctx.beginPath();
+  for (let gx = gx0 - spacing; gx < viewW; gx += spacing)
+    for (let gy = gy0 - spacing; gy < viewH; gy += spacing)
+      ctx.rect(gx, gy, 1.4, 1.4);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const neighbors = selected ? (adj.get(selected.id) || new Set()) : null;
+  const hoverNb = (!selected && hovered) ? (adj.get(hovered.id) || new Set()) : null;
+  const dimmed = n =>
+    (highlight && !highlight.has(n.id)) ||
+    (selected && n !== selected && !(neighbors && neighbors.has(n.id))) ||
+    (hoverNb && n !== hovered && !hoverNb.has(n.id));
+  const off_l = -60, off_t = -60, off_r = viewW + 60, off_b = viewH + 60;
+
+  for (const e of visEdges) {
+    const [x1, y1] = worldToScreen(e.a.x, e.a.y);
+    const [x2, y2] = worldToScreen(e.b.x, e.b.y);
+    // viewport culling: skip edges entirely outside the screen
+    if ((x1 < off_l && x2 < off_l) || (x1 > off_r && x2 > off_r) ||
+        (y1 < off_t && y2 < off_t) || (y1 > off_b && y2 > off_b)) continue;
+    const active = (selected && (e.a === selected || e.b === selected)) ||
+                   (!selected && hovered && (e.a === hovered || e.b === hovered));
+    ctx.globalAlpha = (dimmed(e.a) || dimmed(e.b)) ? 0.05
+      : active ? 0.85 : 0.13 + (e.weight - 0.35) * 0.7;
+    ctx.strokeStyle = active ? css["--accent"] : css["--edge"];
+    ctx.lineWidth = active ? 1.6 : 1;
+    // soft curved edges: a slight perpendicular bow
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const dx = x2 - x1, dy = y2 - y1, d = Math.hypot(dx, dy) || 1;
+    const off = Math.min(26, d * 0.09);
+    ctx.beginPath(); ctx.moveTo(x1, y1);
+    ctx.quadraticCurveTo(mx - dy / d * off, my + dx / d * off, x2, y2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // selection ripple
+  if (ripple) {
+    ripple.t += 0.045;
+    if (ripple.t >= 1) ripple = null;
+    else {
+      const [rx, ry] = worldToScreen(ripple.node.x, ripple.node.y);
+      ctx.globalAlpha = (1 - ripple.t) * 0.5;
+      ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(rx, ry, (radius(ripple.node) + 4 + ripple.t * 34) * cam.k, 0, 7);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  const showLabels = visNodes.length <= 60 || cam.k >= 1.2;
+  hoverEasing = false;
+  for (const n of visNodes) {
+    // hover/selection scale eases in and out
+    const target = (n === hovered || n === selected) ? 1 : 0;
+    n.hs += (target - n.hs) * 0.2;
+    if (Math.abs(target - n.hs) > 0.005) hoverEasing = true;
+    const [x, y] = worldToScreen(n.x, n.y);
+    if (x < off_l || x > off_r || y < off_t || y > off_b) continue;  // culled
+    const rad = radius(n) * cam.k * (1 + 0.22 * n.hs);
+    const dim = dimmed(n);
+    ctx.globalAlpha = dim ? 0.13 : (n.superseded ? 0.45 : 1);
+    ctx.fillStyle = colorOf(n);
+    drawShape(x, y, rad, n.type);
+    ctx.fill();
+    if (n.superseded) {
+      ctx.setLineDash([3, 3]); ctx.strokeStyle = css["--text-muted"];
+      ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+    }
+    if (n === selected || (highlight && highlight.has(n.id))) {
+      ctx.strokeStyle = css["--text-primary"]; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, 7); ctx.stroke();
+    }
+    if (multiSel.has(n.id)) {
+      ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (showLabels && !dim) {
+      ctx.fillStyle = css["--text-secondary"];
+      ctx.font = `${n.hs > 0.5 ? "600 " : ""}11px -apple-system, sans-serif`;
+      const label = n.text.length > 38 ? n.text.slice(0, 37) + "…" : n.text;
+      ctx.fillText(label, x + rad + 6, y + 3.5);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function loop() {
+  const simActive = alpha >= 0.003;
+  step();
+  glideCamera();
+  // Idle frames skip drawing entirely — redraw only while something moves
+  // (sim, camera glide, ripple, hover easing) or after an interaction.
+  if (needsRender || simActive || camTarget || ripple || hoverEasing) {
+    draw();
+    needsRender = false;
+  }
+  requestAnimationFrame(loop);
+}
+
+// -------------------------------------------------------------- interaction
+function nodeAt(sx, sy) {
+  for (let i = visNodes.length - 1; i >= 0; i--) {
+    const n = visNodes[i];
+    const [x, y] = worldToScreen(n.x, n.y);
+    const hit = Math.max(radius(n) * cam.k, 8) + 4;   // generous hit target
+    if ((sx - x) ** 2 + (sy - y) ** 2 <= hit * hit) return n;
+  }
+  return null;
+}
+
+canvas.addEventListener("mousedown", e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) dragging = n; else { panning = true; canvas.classList.add("dragging"); }
+  camTarget = null;  // manual control cancels any glide in progress
+  lastMouse = [e.offsetX, e.offsetY];
+});
+addEventListener("mouseup", e => {
+  // offsetX is relative to e.target, which may not be the canvas on mouseup —
+  // recompute against the canvas rect so click-vs-drag detection is correct.
+  const r = canvas.getBoundingClientRect();
+  const ox = e.clientX - r.left, oy = e.clientY - r.top;
+  if (dragging && lastMouse && Math.hypot(ox - lastMouse[0], oy - lastMouse[1]) < 4) {
+    if (e.shiftKey) toggleMulti(dragging); else select(dragging);
+  } else if (panning && lastMouse && e.target === canvas &&
+             Math.hypot(ox - lastMouse[0], oy - lastMouse[1]) < 4) {
+    select(null);
+  }
+  dragging = null; panning = false; canvas.classList.remove("dragging");
+});
+canvas.addEventListener("mousemove", e => {
+  if (dragging) {
+    const [wx, wy] = screenToWorld(e.offsetX, e.offsetY);
+    dragging.x = wx; dragging.y = wy; alpha = Math.max(alpha, 0.25);
+    invalidate();
+  } else if (panning) {
+    cam.x -= (e.offsetX - lastMouse[0]) / cam.k;
+    cam.y -= (e.offsetY - lastMouse[1]) / cam.k;
+    lastMouse = [e.offsetX, e.offsetY];
+    invalidate();
+  } else {
+    const n = nodeAt(e.offsetX, e.offsetY);
+    if (n !== hovered) invalidate();
+    hovered = n; canvas.style.cursor = n ? "pointer" : "grab";
+    const tip = $("tooltip");
+    if (n) {
+      tip.style.display = "block";
+      tip.innerHTML = `<div class="t-text">${escapeHtml(n.text.slice(0, 220))}${n.text.length > 220 ? "…" : ""}</div>
+        <div class="t-meta"><span class="dot" style="width:9px;height:9px;border-radius:50%;background:${colorOf(n)};display:inline-block"></span>
+        ${escapeHtml(n.project_id)} <span class="badge">${TYPE_GLYPH[n.type] || ""} ${n.type}</span> imp ${n.importance} · ${fmtDate(n.created_at)}${n.superseded ? " · superseded" : ""}</div>`;
+      tip.style.left = Math.min(e.offsetX + 14, canvas.getBoundingClientRect().width - 350) + "px";
+      tip.style.top = (e.offsetY + 14) + "px";
+    } else tip.style.display = "none";
+  }
+  if (dragging || panning) $("tooltip").style.display = "none";
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  camTarget = null;
+  invalidate();
+  const [wx, wy] = screenToWorld(e.offsetX, e.offsetY);
+  // deltaY-proportional exponential zoom: continuous on trackpads (many tiny
+  // deltas), stepped on mouse wheels — the old fixed ×1.12 per event made
+  // trackpad zoom race and stutter.
+  const scale = e.deltaMode === 1 ? 0.05 : 0.0022;  // lines vs pixels
+  const factor = Math.exp(-e.deltaY * scale);
+  cam.k = Math.min(4, Math.max(0.15, cam.k * factor));
+  const [sx2, sy2] = worldToScreen(wx, wy);
+  cam.x += (sx2 - e.offsetX) / cam.k; cam.y += (sy2 - e.offsetY) / cam.k;
+}, { passive: false });
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Minimal markdown renderer for transcripts (self-contained, escapes first so
+// message content can never inject HTML). Covers what chat replies actually
+// use: fenced/inline code, headers, bold/italic, lists, line breaks.
+function mdToHtml(src) {
+  let t = escapeHtml(src);
+  const blocks = [];
+  t = t.replace(/```[^\n`]*\n?([\s\S]*?)```/g, (m, code) => {
+    blocks.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
+    return `\x00${blocks.length - 1}\x00`;
+  });
+  t = t.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  t = t.replace(/^#{1,6}\s+(.+)$/gm, '<span class="md-h">$1</span>');
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/gm, "$1<em>$2</em>");
+  t = t.replace(/^\s*[-*+]\s+(.+)$/gm, '<span class="md-li">•&nbsp;$1</span>');
+  t = t.replace(/^\s*(\d+)\.\s+(.+)$/gm, '<span class="md-li">$1.&nbsp;$2</span>');
+  t = t.replace(/\n/g, "<br>");
+  t = t.replace(/(<\/span>)<br>/g, "$1");        // list rows already break
+  t = t.replace(/\x00(\d+)\x00(<br>)?/g, (m, i) => blocks[+i]);
+  return t;
+}
+
+// ------------------------------------------------------------------- panel
+function select(n, withRipple = true) {
+  selected = n;
+  invalidate();
+  const panel = $("panel");
+  if (!n) { panel.style.display = "none"; return; }
+  if (withRipple) ripple = { node: n, t: 0 };
+  panel.style.display = "block";
+  $("pText").textContent = n.text;
+  $("pMeta").innerHTML = `
+    <tr><td>Project</td><td><span class="dot" style="width:9px;height:9px;border-radius:50%;background:${colorOf(n)};display:inline-block;margin-right:6px"></span>${escapeHtml(n.project_id)}</td></tr>
+    <tr><td>Type</td><td><span class="badge">${TYPE_GLYPH[n.type] || ""} ${n.type}</span></td></tr>
+    <tr><td>Importance</td><td>${n.importance}</td></tr>
+    <tr><td>Created</td><td>${fmtDate(n.created_at)}</td></tr>
+    <tr><td>Session</td><td>${escapeHtml(n.session_id || "—")}</td></tr>
+    <tr><td>Status</td><td>${n.superseded ? "superseded" : "active"}</td></tr>
+    <tr><td>Links</td><td>${(edgesByNode.get(n.id) || []).length} related</td></tr>`;
+  $("pLoadSession").style.display = n.session_id ? "" : "none";
+  $("pRetagSession").style.display = n.session_id ? "" : "none";
+  // related memories, strongest link first
+  const rels = (edgesByNode.get(n.id) || [])
+    .map(e => ({ other: e.a === n ? e.b : e.a, w: e.weight }))
+    .filter(r => r.other)
+    .sort((a, b) => b.w - a.w).slice(0, 8);
+  $("pRelated").innerHTML = rels.length ? rels.map(r =>
+    `<div class="rel" data-id="${r.other.id}">
+       <span class="dot" style="background:${colorOf(r.other)}"></span>
+       <span class="txt">${escapeHtml(r.other.text)}</span>
+       <span class="w">${Math.round(r.w * 100)}%</span></div>`
+  ).join("") : `<div style="color:var(--text-muted)">No linked memories.</div>`;
+  $("pRelated").querySelectorAll(".rel").forEach(el => {
+    el.onclick = () => {
+      const t = nodes.find(x => x.id === el.dataset.id);
+      if (t) { select(t); camTarget = { x: t.x, y: t.y, k: Math.max(cam.k, 1.2) }; }
+    };
+  });
+  $("transcript").innerHTML = "";
+}
+$("panelClose").onclick = () => select(null);
+$("pFilterProject").onclick = () => {
+  if (!selected) return;
+  selProjects = new Set([selected.project_id]);
+  refreshChips(); rebuildVisible(); renderList(); updateStats();
+  alpha = Math.max(alpha, .3); fitted = false;
+};
+
+// -------------------------------------------------- multi-select bulk actions
+function updateBulkbar() {
+  const el = $("bulkbar");
+  if (multiSel.size) {
+    el.style.display = "flex";
+    $("bulkCount").textContent = multiSel.size + " selected";
+  } else el.style.display = "none";
+  invalidate();
+}
+
+function toggleMulti(n) {
+  if (multiSel.has(n.id)) multiSel.delete(n.id); else multiSel.add(n.id);
+  updateBulkbar();
+}
+
+function expandLinked() {
+  // BFS through similarity edges, visible nodes only — one click selects the
+  // whole related cluster so it can be re-tagged in one sync instead of
+  // node by node.
+  const queue = [...multiSel];
+  const seen = new Set(multiSel);
+  while (queue.length) {
+    const id = queue.pop();
+    for (const nb of (adj.get(id) || [])) {
+      if (seen.has(nb)) continue;
+      const node = nodeById.get(nb);
+      if (node && visible(node)) { seen.add(nb); queue.push(nb); }
+    }
+  }
+  multiSel = seen;
+  updateBulkbar();
+}
+
+$("bulkLinked").onclick = expandLinked;
+$("bulkClear").onclick = () => { multiSel = new Set(); updateBulkbar(); };
+$("bulkRetag").onclick = async () => {
+  if (!multiSel.size) return;
+  const slug = await pickProject("Re-tag selection",
+    `${multiSel.size} selected memories will move in one sync.`, null, "Move all");
+  if (!slug) return;
+  const r = await patchJSON("/memory/facts", { ids: [...multiSel], project_id: slug });
+  if (r) {
+    toast(`Re-tagged ${r.count} memories to "${slug}".`);
+    multiSel = new Set(); updateBulkbar();
+    await load();
+  }
+};
+$("pSelectGroup").onclick = () => {
+  if (!selected) return;
+  multiSel = new Set([selected.id]);
+  expandLinked();
+  select(null, false);  // close the panel so the dashed rings are visible
+};
+
+// ------------------------------------------------------- re-tag corrections
+// Custom modal replaces prompt()/confirm(): pick an existing project from a
+// list (with its color) or type a new slug — no more blind manual typing.
+let modalResolve = null;
+const SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+function toast(msg, ms = 2800) {
+  const t = $("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.display = "none"; }, ms);
+}
+
+function closeModal(result) {
+  $("modal").style.display = "none";
+  if (modalResolve) { const r = modalResolve; modalResolve = null; r(result); }
+}
+
+function openModal({ title, message, options, current, value, confirmLabel }) {
+  return new Promise(res => {
+    modalResolve = res;
+    $("modalTitle").textContent = title;
+    $("modalMsg").textContent = message || "";
+    const opts = $("modalOptions");
+    opts.innerHTML = "";
+    if (options && options.length) {
+      for (const slug of options) {
+        const row = document.createElement("label");
+        row.className = "opt" + (slug === current ? " current" : "");
+        row.innerHTML =
+          `<input type="radio" name="projOpt" value="${escapeHtml(slug)}"${slug === current ? " checked" : ""}>` +
+          `<span class="dot" style="background:${css[projectColor.get(slug)] || css["--other"]}"></span>` +
+          `<span>${escapeHtml(slug)}</span>` +
+          (slug === current ? '<span style="color:var(--text-muted);font-size:11px">· current</span>' : "");
+        opts.appendChild(row);
+      }
+      opts.style.display = "flex";
+    } else opts.style.display = "none";
+    const inp = $("modalInput");
+    inp.value = value || "";
+    inp.placeholder = options ? "…or type a NEW project slug" : "project-slug";
+    $("modalOk").textContent = confirmLabel || "Apply";
+    $("modal").style.display = "block";
+    if (!options) inp.focus();
+  });
+}
+
+$("modalInput").addEventListener("input", () => {
+  if ($("modalInput").value)
+    document.querySelectorAll('#modalOptions input[type=radio]').forEach(r => { r.checked = false; });
+});
+$("modalInput").addEventListener("keydown", e => { if (e.key === "Enter") $("modalOk").click(); });
+$("modalCancel").onclick = () => closeModal(null);
+$("modal").onclick = e => { if (e.target === $("modal")) closeModal(null); };
+$("modalOk").onclick = () => {
+  let slug = $("modalInput").value.trim().toLowerCase();
+  if (!slug) {
+    const r = document.querySelector('#modalOptions input[type=radio]:checked');
+    slug = r ? r.value : "";
+  }
+  if (!slug) { toast("Pick a project or type a new slug."); return; }
+  if (!SLUG_RE.test(slug)) { toast("Invalid slug: lowercase letters, digits, - and _ only."); return; }
+  closeModal(slug);
+};
+
+function pickProject(title, message, current, confirmLabel) {
+  return openModal({ title, message, options: lastSlugs, current, confirmLabel });
+}
+function inputSlug(title, message, value, confirmLabel) {
+  return openModal({ title, message, options: null, value, confirmLabel });
+}
+
+async function patchJSON(url, body) {
+  const resp = await fetch(url, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) { toast("Failed: " + (await resp.text())); return null; }
+  return resp.json();
+}
+
+$("pRetagFact").onclick = async () => {
+  if (!selected) return;
+  const slug = await pickProject("Move memory",
+    "Only THIS memory moves. Its source session and siblings stay put.",
+    selected.project_id, "Move");
+  if (!slug || slug === selected.project_id) return;
+  const r = await patchJSON(`/memory/facts/${encodeURIComponent(selected.id)}`, { project_id: slug });
+  if (r) { toast(`Memory moved to "${slug}".`); select(null); await load(); }
+};
+
+$("pRetagSession").onclick = async () => {
+  if (!selected || !selected.session_id) return;
+  const slug = await pickProject("Re-tag whole session",
+    `Session ${selected.session_id}: ALL its turns and facts move, and FUTURE turns will follow (stickiness).`,
+    selected.project_id, "Move everything");
+  if (!slug) return;
+  const r = await patchJSON(`/sessions/${encodeURIComponent(selected.session_id)}/project`, { project_id: slug });
+  if (r) { toast(`Moved ${r.turns} turn(s) + ${r.facts} fact(s) to "${slug}".`); select(null); await load(); }
+};
+
+async function renameProject(slug) {
+  const to = await inputSlug("Rename project",
+    `"${slug}" will be renamed across ALL conversations, memories and documents.`,
+    slug, "Rename");
+  if (!to || to === slug) return;
+  const r = await patchJSON(`/memory/projects/${encodeURIComponent(slug)}`, { project_id: to });
+  if (!r) return;
+  // Color follows the entity: the renamed project keeps its color slot.
+  if (projectColor.has(slug) && !projectColor.has(to)) projectColor.set(to, projectColor.get(slug));
+  projectColor.delete(slug);
+  if (selProjects.has(slug)) { selProjects.delete(slug); selProjects.add(to); }
+  toast(`Renamed "${slug}" → "${to}".`);
+  select(null); await load();
+}
+
+$("pLoadSession").onclick = async () => {
+  if (!selected || !selected.session_id) return;
+  const t = $("transcript");
+  t.innerHTML = "<em>loading…</em>";
+  try {
+    const turns = await (await fetch(`/sessions/${encodeURIComponent(selected.session_id)}/history`)).json();
+    t.innerHTML = "<h2>Source session</h2>" + turns.map(m =>
+      `<div class="turn"><div class="role">${escapeHtml(m.role)}</div>${mdToHtml(m.content)}</div>`
+    ).join("") || "<em>empty</em>";
+  } catch { t.innerHTML = "<em>could not load session</em>"; }
+};
+
+// -------------------------------------------------------- spotlight search
+const RECENT_KEY = "hermes-ui-recent-searches";
+let spotResults = [], spotIdx = -1, spotTimer = null;
+
+function recents() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; }
+}
+function pushRecent(q) {
+  const list = [q, ...recents().filter(x => x !== q)].slice(0, 6);
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch {}
+}
+
+function openSpot() {
+  $("spot").style.display = "block";
+  $("spotInput").value = "";
+  renderSpotRecents();
+  $("spotInput").focus();
+}
+function closeSpot() { $("spot").style.display = "none"; spotResults = []; spotIdx = -1; }
+
+function renderSpotRecents() {
+  const rec = recents();
+  spotResults = []; spotIdx = -1;
+  $("spotList").innerHTML = rec.length
+    ? `<div class="spot-section">Recent searches</div>` + rec.map(q =>
+        `<div class="spot-row" data-q="${escapeHtml(q)}"><span>↩</span><span class="txt">${escapeHtml(q)}</span></div>`).join("")
+    : `<div class="spot-section">Type to search semantically — e.g. "database decisions", "deadlines", "my preferences"</div>`;
+  $("spotList").querySelectorAll(".spot-row").forEach(el => {
+    el.onclick = () => { $("spotInput").value = el.dataset.q; runSpotSearch(el.dataset.q); };
+  });
+}
+
+async function runSpotSearch(q) {
+  if (!q.trim()) { renderSpotRecents(); return; }
+  const res = await (await fetch("/memory/search", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: q, top_k: 10 }),
+  })).json();
+  spotResults = (res.results || []).map(m => ({ ...m, node: nodeById.get(m.id) }))
+    .filter(r => r.node);
+  spotIdx = spotResults.length ? 0 : -1;
+  $("spotList").innerHTML = spotResults.length
+    ? spotResults.map((r, i) =>
+        `<div class="spot-row${i === spotIdx ? " focused" : ""}" data-i="${i}">
+           <span class="dot" style="background:${colorOf(r.node)}"></span>
+           <span class="txt">${escapeHtml(r.text)}</span>
+           <span class="meta">${escapeHtml(r.project_id)} · ${Math.round((r.similarity || 0) * 100)}%</span></div>`).join("")
+    : `<div class="spot-section">No related memories found.</div>`;
+  $("spotList").querySelectorAll(".spot-row").forEach(el => {
+    el.onclick = () => chooseSpot(parseInt(el.dataset.i, 10));
+  });
+}
+
+function chooseSpot(i) {
+  const r = spotResults[i];
+  if (!r) return;
+  pushRecent($("spotInput").value.trim());
+  highlight = new Set(spotResults.map(x => x.id));
+  closeSpot();
+  select(r.node);
+  camTarget = { x: r.node.x, y: r.node.y, k: Math.max(cam.k, 1.4) };
+}
+
+$("searchBtn").onclick = openSpot;
+$("spot").onclick = e => { if (e.target === $("spot")) closeSpot(); };
+$("spotInput").addEventListener("input", e => {
+  clearTimeout(spotTimer);
+  spotTimer = setTimeout(() => runSpotSearch(e.target.value), 250);
+});
+$("spotInput").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!spotResults.length) return;
+    spotIdx = (spotIdx + (e.key === "ArrowDown" ? 1 : -1) + spotResults.length) % spotResults.length;
+    $("spotList").querySelectorAll(".spot-row").forEach((el, i) =>
+      el.classList.toggle("focused", i === spotIdx));
+  } else if (e.key === "Enter" && spotIdx >= 0) {
+    chooseSpot(spotIdx);
+  }
+});
+addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSpot(); return; }
+  if (e.key === "Escape") {
+    if ($("modal").style.display === "block") closeModal(null);
+    else if ($("spot").style.display === "block") closeSpot();
+    else if (highlight) { highlight = null; invalidate(); }
+    else if (multiSel.size) { multiSel = new Set(); updateBulkbar(); }
+    else select(null);
+  }
+});
+
+// ------------------------------------------------------------ theme/export
+const THEME_KEY = "hermes-ui-theme";
+const THEMES = ["auto", "light", "dark"];
+function applyTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+  $("themeBtn").textContent = "◐ " + t;
+  readCss(); buildChips(lastSlugs); renderList(); invalidate();
+}
+$("themeBtn").onclick = () => {
+  const cur = localStorage.getItem(THEME_KEY) || "auto";
+  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+  try { localStorage.setItem(THEME_KEY, next); } catch {}
+  applyTheme(next);
+};
+
+$("exportBtn").onclick = () => {
+  const tmp = document.createElement("canvas");
+  tmp.width = canvas.width; tmp.height = canvas.height;
+  const t = tmp.getContext("2d");
+  t.fillStyle = css["--surface-1"];
+  t.fillRect(0, 0, tmp.width, tmp.height);
+  t.drawImage(canvas, 0, 0);
+  tmp.toBlob(b => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "hermes-memory-graph.png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+};
+
+// -------------------------------------------------------------- list view
+function renderList() {
+  const rows = [...visNodes]
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+    .map(n => `<tr data-id="${n.id}" class="${n.superseded ? "ghosted" : ""}">
+      <td><span class="dot" style="background:${colorOf(n)}"></span>${escapeHtml(n.project_id)}</td>
+      <td>${escapeHtml(n.text)}</td>
+      <td><span class="badge">${TYPE_GLYPH[n.type] || ""} ${n.type}</span></td>
+      <td>${n.importance}</td>
+      <td>${fmtDate(n.created_at)}</td></tr>`).join("");
+  $("list").innerHTML = `<table>
+    <thead><tr><th>Project</th><th>Memory</th><th>Type</th><th>Imp.</th><th>Created</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  $("list").querySelectorAll("tr[data-id]").forEach(tr => {
+    tr.onclick = () => { select(nodes.find(n => n.id === tr.dataset.id)); };
+  });
+}
+$("fitBtn").onclick = fitView;
+$("homeTitle").onclick = () => {
+  // "home": clear every transient state and re-center the map
+  highlight = null;
+  multiSel = new Set(); updateBulkbar();
+  select(null);
+  fitView();
+};
+$("legendBtn").onclick = () => {
+  const lg = $("legend");
+  lg.style.display = lg.style.display === "block" ? "none" : "block";
+};
+$("viewGraph").onclick = () => { $("list").style.display = "none"; setView("viewGraph"); };
+$("viewList").onclick = () => { renderList(); $("list").style.display = "block"; setView("viewList"); };
+function setView(id) {
+  $("viewGraph").classList.toggle("active", id === "viewGraph");
+  $("viewList").classList.toggle("active", id === "viewList");
+}
+$("showSuperseded").onchange = load;
+$("edgeMin").oninput = e => {
+  edgeMin = parseFloat(e.target.value);
+  $("edgeMinVal").textContent = "≥ " + edgeMin.toFixed(2);
+  rebuildVisible(); updateStats(); alpha = Math.max(alpha, .3);
+};
+$("sameProj").onchange = e => {
+  sameProjOnly = e.target.checked;
+  rebuildVisible(); updateStats(); alpha = Math.max(alpha, .3);
+};
+
+applyTheme(localStorage.getItem(THEME_KEY) || "auto");
+resize(); load(); loop();
+</script>
+</body>
+</html>

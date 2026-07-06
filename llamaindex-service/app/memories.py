@@ -194,6 +194,60 @@ def list_facts(
     ]
 
 
+def set_fact_project(client: QdrantClient, fact_id: str, project_id: str) -> bool:
+    """Re-tag one fact (user correction from /ui). False if the id is unknown."""
+    existing = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION, ids=[fact_id], with_payload=False
+    )
+    if not existing:
+        return False
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"project_id": project_id},
+        points=[fact_id],
+    )
+    return True
+
+
+def set_facts_project(
+    client: QdrantClient, fact_ids: list, project_id: str
+) -> int:
+    """Bulk re-tag facts by id (multi-select in /ui). Unknown ids are
+    silently skipped; returns the number actually re-tagged."""
+    existing = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION, ids=list(fact_ids), with_payload=False
+    )
+    ids = [p.id for p in existing]
+    if ids:
+        client.set_payload(
+            collection_name=config.MEMORIES_COLLECTION,
+            payload={"project_id": project_id},
+            points=ids,
+        )
+    return len(ids)
+
+
+def set_session_facts_project(
+    client: QdrantClient, session_id: str, project_id: str,
+    user_id: str = config.USER_ID,
+) -> int:
+    """Re-tag every fact distilled from a session. Returns affected count."""
+    flt = qmodels.Filter(must=[
+        qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
+        qmodels.FieldCondition(key="session_id", match=qmodels.MatchValue(value=session_id)),
+    ])
+    count = client.count(
+        collection_name=config.MEMORIES_COLLECTION, count_filter=flt, exact=True
+    ).count
+    if count:
+        client.set_payload(
+            collection_name=config.MEMORIES_COLLECTION,
+            payload={"project_id": project_id},
+            points=qmodels.FilterSelector(filter=flt),
+        )
+    return count
+
+
 def delete_fact(client: QdrantClient, fact_id: str) -> bool:
     """Hard-delete a fact (user-initiated forget — distinct from supersede,
     which is the natural update path and keeps provenance)."""
@@ -224,6 +278,84 @@ def delete_all_facts(client: QdrantClient, user_id: str = config.USER_ID) -> int
             points_selector=qmodels.FilterSelector(filter=flt),
         )
     return count
+
+
+def graph_data(
+    client: QdrantClient,
+    user_id: str = config.USER_ID,
+    include_superseded: bool = False,
+    top_edges: int = 4,
+    min_similarity: float = 0.35,
+    limit: int = 2000,
+) -> dict:
+    """Nodes + similarity edges over the fact collection, for the /ui graph.
+
+    Each node keeps its top_edges most similar neighbours above
+    min_similarity. Read-only; O(n²) similarity is fine at personal-memory
+    scale (hundreds of facts)."""
+    import numpy as np
+
+    must = [
+        qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id))
+    ]
+    if not include_superseded:
+        must.append(qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")))
+    points = []
+    offset = None
+    while len(points) < limit:
+        batch, offset = client.scroll(
+            collection_name=config.MEMORIES_COLLECTION,
+            scroll_filter=qmodels.Filter(must=must),
+            limit=min(256, limit - len(points)),
+            offset=offset,
+            with_payload=True,
+            with_vectors=True,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    nodes = [
+        {
+            "id": str(p.id),
+            "text": p.payload.get("text", ""),
+            "type": p.payload.get("type", "fact"),
+            "project_id": p.payload.get("project_id") or config.DEFAULT_PROJECT,
+            "importance": p.payload.get("importance", 0.5),
+            "created_at": p.payload.get("created_at"),
+            "session_id": p.payload.get("session_id") or "",
+            "superseded": bool(p.payload.get("superseded_by")),
+        }
+        for p in points
+    ]
+
+    edges: list[dict] = []
+    if len(points) > 1:
+        vectors = np.array([p.vector for p in points], dtype=np.float32)
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        sims = (vectors / norms) @ (vectors / norms).T
+        seen = set()
+        for i in range(len(points)):
+            order = np.argsort(sims[i])[::-1]
+            kept = 0
+            for j in order:
+                if j == i or kept >= top_edges:
+                    if kept >= top_edges:
+                        break
+                    continue
+                if sims[i][j] < min_similarity:
+                    break
+                key = (min(i, int(j)), max(i, int(j)))
+                if key not in seen:
+                    seen.add(key)
+                    edges.append(
+                        {"source": nodes[i]["id"], "target": nodes[int(j)]["id"],
+                         "weight": round(float(sims[i][j]), 4)}
+                    )
+                kept += 1
+
+    return {"nodes": nodes, "edges": edges}
 
 
 def _fmt_date(ts: float | None) -> str:
