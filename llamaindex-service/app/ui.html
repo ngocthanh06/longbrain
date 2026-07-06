@@ -290,6 +290,8 @@
   <button class="btn" id="viewList">List</button>
   <button class="btn" id="fitBtn" title="Fit graph to window">Fit</button>
   <button class="btn" id="exportBtn" title="Export current view as PNG">PNG</button>
+  <button class="btn" id="bundleExportBtn" title="Download all memory as a JSON bundle — for moving to another machine">⇩ Export</button>
+  <button class="btn" id="bundleImportBtn" title="Import a bundle exported on another machine — re-embeds with the current model, existing records are skipped">⇪ Import</button>
   <button class="btn" id="themeBtn" title="Theme: auto / light / dark">◐ auto</button>
   <button class="btn" id="legendBtn" title="What do the shapes and colors mean?">?</button>
   <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
@@ -374,6 +376,7 @@
   </div>
 </div>
 <div id="toast"></div>
+<input type="file" id="bundleFile" accept="application/json,.json" style="display:none">
 
 <script>
 "use strict";
@@ -1249,6 +1252,43 @@ $("exportBtn").onclick = () => {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   });
+};
+
+// ------------------------------------------------ transfer (JSON bundles)
+// Text-level export/import for device migration — the server re-embeds on
+// import, so bundles work across embedding-model changes (see transfer.py).
+$("bundleExportBtn").onclick = () => { location.href = "/memory/export"; };
+
+$("bundleImportBtn").onclick = () => $("bundleFile").click();
+$("bundleFile").onchange = async e => {
+  const file = e.target.files[0];
+  e.target.value = "";  // allow re-picking the same file
+  if (!file) return;
+  const text = await file.text();
+  let bundle;
+  try { bundle = JSON.parse(text); } catch { toast("Not a JSON file."); return; }
+  const c = bundle.counts || {};
+  const what = c.facts != null
+    ? ` — ${c.facts} memories, ${c.turns} chat turns, ${c.documents} document chunks` : "";
+  if (!confirm(`Import "${file.name}"${what}?\n\nEverything is re-embedded with ` +
+      `the current model; records that already exist are skipped.`)) return;
+  const btn = $("bundleImportBtn");
+  btn.disabled = true; btn.textContent = "Importing…";
+  try {
+    const resp = await fetch("/memory/import", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: text,
+    });
+    if (!resp.ok) { toast("Import failed: " + (await resp.text()), 6000); return; }
+    const r = await resp.json();
+    const skipped = r.facts.skipped_existing + r.turns.skipped_existing + r.documents.skipped_existing;
+    toast(`Imported ${r.facts.imported} memories, ${r.turns.imported} turns, ` +
+          `${r.documents.imported} document chunks · ${skipped} already present.`, 6000);
+    await load();
+  } catch (err) {
+    toast("Import failed: " + err, 6000);
+  } finally {
+    btn.disabled = false; btn.textContent = "⇪ Import";
+  }
 };
 
 // -------------------------------------------------------------- list view

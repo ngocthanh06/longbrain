@@ -81,6 +81,10 @@ container, no external assets, light/dark themed:
   it to the whole connected cluster), or rename a project everywhere
   (the ✎ on a project chip).
 - **List view** (same filters, as a table) and **PNG export** of the graph.
+- **Transfer** (`⇩ Export` / `⇪ Import` in the header): download the whole
+  memory as a JSON bundle, or import one from another machine — with a
+  confirmation showing the bundle's counts before anything is written
+  (see "Moving to another machine" below).
 
 Deleting is deliberately NOT offered here — forget through Hermes
 (`forget_about`) or the REST API, which have confirmation guards.

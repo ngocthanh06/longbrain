@@ -83,6 +83,10 @@ container, không tải asset ngoài, có theme sáng/tối:
   ("Select linked" mở rộng ra trọn cụm liên thông), hoặc đổi tên project
   ở mọi nơi (nút ✎ trên chip project).
 - **List view** (cùng bộ lọc, dạng bảng) và **xuất PNG** đồ thị.
+- **Chuyển máy** (`⇩ Export` / `⇪ Import` trên header): tải toàn bộ bộ nhớ
+  về dạng bundle JSON, hoặc nạp bundle từ máy khác — có hộp xác nhận hiển
+  thị số lượng bản ghi trong bundle trước khi ghi bất cứ thứ gì
+  (xem mục "Chuyển sang máy khác" bên dưới).
 
 Trang này cố ý KHÔNG có chức năng xoá — hãy quên qua Hermes
 (`forget_about`) hoặc REST API, nơi có bước xác nhận.
