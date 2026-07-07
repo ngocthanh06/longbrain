@@ -896,6 +896,36 @@ function draw() {
   ctx.clearRect(0, 0, viewW, viewH);
   const off_l = -60, off_t = -60, off_r = viewW + 60, off_b = viewH + 60;
 
+  // Milky Way band: a soft glowing streak across the whole map, world-
+  // anchored (fixed angle through the origin, pans/zooms like everything
+  // else) so it reads as a real feature of the universe, not a screen
+  // decal. Layered gradients (wide+faint outer haze, narrower+brighter
+  // core) — the same trick real Milky Way photos show, without needing an
+  // image asset. Purely atmospheric: neutral tone, drawn first so every
+  // other layer (nebulae, stars, nodes) sits on top of it.
+  {
+    const angle = 0.62;
+    const [ox, oy] = worldToScreen(0, 0);
+    const length = Math.hypot(viewW, viewH) * 2.4;
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.rotate(angle);
+    for (const layer of [
+      { half: 320, alpha: 0.05 },
+      { half: 165, alpha: 0.06 },
+      { half: 60, alpha: 0.08 },
+    ]) {
+      const half = layer.half * cam.k;
+      const bg = ctx.createLinearGradient(0, -half, 0, half);
+      bg.addColorStop(0, hexToRgba(css["--text-muted"], 0));
+      bg.addColorStop(0.5, hexToRgba(css["--text-muted"], layer.alpha));
+      bg.addColorStop(1, hexToRgba(css["--text-muted"], 0));
+      ctx.fillStyle = bg;
+      ctx.fillRect(-length / 2, -half, length, half * 2);
+    }
+    ctx.restore();
+  }
+
   // Central core + orbit ring: with multiple galaxies, the middle of the
   // map is otherwise just empty starfield — this gives it a focal point
   // (every galaxy visually "orbits" something) and doubles as a compass
