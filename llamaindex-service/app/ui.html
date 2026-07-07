@@ -104,6 +104,20 @@
   }
   .chip-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .chip-group .glabel { color: var(--text-muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+  /* Project/Type filters: a compact trigger button instead of an
+     ever-growing chip row — scales to any number of projects. */
+  .filter-dd { position: relative; }
+  .filter-dd .dd-trigger { display: flex; align-items: center; gap: 6px; }
+  .filter-dd .caret { color: var(--text-muted); font-size: 9px; }
+  .filter-dd .n { color: var(--text-muted); }
+  .filter-dd .dd-panel {
+    display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 9;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 10px; width: max-content; max-width: min(420px, 80vw);
+    max-height: 260px; overflow-y: auto;
+  }
+  .filter-dd.open .dd-panel { display: flex; }
+  .filter-dd.open .dd-trigger { border-color: var(--accent); }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
     background: var(--surface-2); border: 1px solid var(--border);
@@ -297,8 +311,14 @@
   <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
 </header>
 <div id="chips">
-  <div class="chip-group" id="projectChips"><span class="glabel">Project</span></div>
-  <div class="chip-group" id="typeChips"><span class="glabel">Type</span></div>
+  <div class="filter-dd" id="projectDD">
+    <button class="btn dd-trigger" id="projectDDBtn">Project <span class="n" id="projectDDCount"></span> <span class="caret">▾</span></button>
+    <div class="dd-panel chip-group" id="projectChips"></div>
+  </div>
+  <div class="filter-dd" id="typeDD">
+    <button class="btn dd-trigger" id="typeDDBtn">Type <span class="n" id="typeDDCount"></span> <span class="caret">▾</span></button>
+    <div class="dd-panel chip-group" id="typeChips"></div>
+  </div>
   <div class="chip-group">
     <span class="glabel">Links</span>
     <input type="range" id="edgeMin" min="0.35" max="0.9" step="0.05" value="0.35">
@@ -602,7 +622,33 @@ function buildChips(slugs) {
     chip.onclick = () => { toggleSet(selTypes, t, TYPES); refreshChips(); };
     tc.appendChild(chip);
   }
+  updateDDCounts();
 }
+
+// Project/Type live in a popover now instead of an ever-growing chip row —
+// the trigger button's own label carries the filter state at a glance.
+function ddLabel(selected, total) {
+  return selected === total ? String(total) : `${selected}/${total}`;
+}
+function updateDDCounts() {
+  $("projectDDCount").textContent = ddLabel(selProjects.size, lastSlugs.length);
+  $("typeDDCount").textContent = ddLabel(selTypes.size, TYPES.length);
+}
+function closeAllDD(except) {
+  document.querySelectorAll(".filter-dd.open").forEach(el => { if (el !== except) el.classList.remove("open"); });
+}
+for (const id of ["projectDD", "typeDD"]) {
+  const dd = $(id);
+  $(id + "Btn").onclick = e => {
+    e.stopPropagation();
+    const willOpen = !dd.classList.contains("open");
+    closeAllDD();
+    dd.classList.toggle("open", willOpen);
+  };
+}
+document.addEventListener("click", e => {
+  if (!e.target.closest(".filter-dd")) closeAllDD();
+});
 
 function toggleSet(set, value, all) {
   // Click = solo when everything is on; otherwise toggle; never allow empty.
@@ -620,6 +666,7 @@ function refreshChips() {
   $("typeChips").querySelectorAll(".chip").forEach(c => {
     c.classList.toggle("off", !selTypes.has(c.dataset.type));
   });
+  updateDDCounts();
 }
 
 function updateStats() {
