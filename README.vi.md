@@ -11,31 +11,128 @@ mỗi bản ghi mang nhãn `source_agent`).
 
 ## Kiến trúc
 
+> Sơ đồ dùng [Mermaid](https://mermaid.js.org/) — hiển thị được trực tiếp
+> trên GitHub và trong VS Code/Cursor (preview markdown có sẵn hoặc qua
+> extension "Markdown Preview Mermaid Support"). Nếu trình xem của bạn chỉ
+> hiện text thô thay vì hình vẽ thì đó là do trình xem chưa hỗ trợ, không
+> phải file lỗi — mở bằng GitHub hoặc preview của VS Code để thấy đúng.
+
+```mermaid
+flowchart TB
+    subgraph Agents["Máy người dùng — các agent chat"]
+        HD["Hermes Desktop<br/>hooks/*.py"]
+        CC["Claude Code<br/>hooks/claude/*.py"]
+    end
+
+    HD -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+    CC -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+
+    subgraph SVC["llamaindex-service — FastAPI (host :8800 → container :8000)"]
+        REST["REST API"]
+        MCP["MCP Streamable HTTP (/mcp)"]
+        ENGINE["Memory Engine<br/>L1 Working · L2 Episodic · L3 Semantic · L4 Knowledge"]
+        REST --> ENGINE
+        MCP --> ENGINE
+    end
+
+    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>hermes_chat_history · hermes_memories<br/>hermes_documents · hermes_meta")]
+    QD -.-> VOL[("volume: qdrant_data")]
+    ENGINE -.-> DVOL[("volume: hermes_data<br/>/data — file tài liệu gốc")]
+
+    OLLAMA["ollama (profile tuỳ chọn)"] -. "--profile ollama" .-> SVC
 ```
-Hermes Desktop (host)                Claude Code (host)
-   │ pre_llm_call   ► tự tiêm memory   │ UserPromptSubmit ► tự tiêm memory
-   │ post_llm_call  ► tự ghi lượt chat │ Stop             ► tự ghi lượt chat
-   │ on_session_end ► tự chưng cất     │ SessionEnd       ► tự chưng cất
-   │ on_session_start ► quét bù        │ SessionStart     ► quét bù
-   │  MCP (Streamable HTTP) ──► http://localhost:8800/mcp ◄── MCP
-   ▼                                   ▼
-LlamaIndex service (Docker, 127.0.0.1:8800)
-   ├── L1 Working memory   — ChatMemoryBuffer dựng lại theo session
-   ├── L2 Episodic memory  — hermes_chat_history (từng lượt hội thoại,
-   │                          tìm được theo ngữ nghĩa lẫn theo phiên)
-   ├── L3 Semantic memory  — hermes_memories (fact/preference/decision/task
-   │                          do consolidation chưng cất, có dedup/supersede)
-   ├── L4 Knowledge base   — hermes_documents (RAG tài liệu)
-   ├── Embedding: fastembed (ONNX local, bake sẵn trong image)
-   └── LLM (cho consolidation): none | anthropic | openai | nvidia | gemini | ollama
-   ▼
-Qdrant (Docker, 127.0.0.1:6333) — named volume `qdrant_data`
-```
+
+- **L1 Working memory** — `ChatMemoryBuffer` dựng lại theo session
+- **L2 Episodic memory** — `hermes_chat_history` (từng lượt hội thoại, tìm được theo ngữ nghĩa lẫn theo phiên)
+- **L3 Semantic memory** — `hermes_memories` (fact/preference/decision/task do consolidation chưng cất, có dedup/supersede)
+- **L4 Knowledge base** — `hermes_documents` (RAG tài liệu)
+- **Embedding**: fastembed (ONNX local, bake sẵn trong image)
+- **LLM (cho consolidation)**: `none | anthropic | openai | nvidia | gemini | ollama`
+
+Chi tiết đầy đủ (sơ đồ luồng ghi/chưng cất/truy hồi, schema Qdrant, provenance đa agent...): xem [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ![alt text](image-1.png)
 
 Vòng đời memory chạy **tự động hoàn toàn**: ghi → tự nhắc lại → chưng cất →
 quên có kiểm soát (tool `forget_about`) → backup đêm (2:00, giữ 7 bản).
+
+## Ngữ cảnh được ghép thế nào (và vì sao rẻ)
+
+Trước mỗi lượt chat, một hook gọi `POST /memory/recall`, ghép 3 nguồn thành
+một khối ngữ cảnh (context block) rồi tiêm vào prompt (sơ đồ tuần tự đầy đủ:
+[ARCHITECTURE.md §3c](ARCHITECTURE.md#3-data-flows)):
+
+- **L3** — fact đã chưng cất liên quan đến câu bạn vừa hỏi (tìm ngữ nghĩa trong `hermes_memories`)
+- **L2** — hội thoại cũ liên quan từ *phiên khác* (tìm ngữ nghĩa trong `hermes_chat_history`)
+- **L1** — các lượt gần nhất của chính phiên hiện tại
+
+Hai cơ chế giữ cho việc này rẻ, không biến thành một `CLAUDE.md` phình to dần:
+
+1. **Không liên quan → không tiêm gì cả.** Kết quả dưới `RECALL_MIN_SCORE`
+   (mặc định `0.25`) bị loại hoàn toàn; nếu cả L2 lẫn L3 đều rỗng, khối
+   ngữ cảnh là chuỗi rỗng và hook không in gì ra — **0 token phụ trội** cho
+   lượt đó.
+2. **Phần được tiêm cũng có giới hạn kích thước cố định**, bất kể bộ nhớ đã
+   tích lũy bao nhiêu: `HERMES_MEMORY_MAX_CONTEXT` (mặc định `6000` ký tự,
+   ~1500-2000 token) cắt bớt phần tiêm ở hook Claude Code. Một `CLAUDE.md`
+   tự viết tay thì được nạp **toàn bộ, mỗi lượt chat**, và càng ghi thêm
+   thì càng to — chi phí mỗi lượt tăng dần theo thời gian. Ở đây chi phí
+   mỗi lượt gần như không đổi dù bộ nhớ phình to cỡ nào, vì chỉ phần điểm
+   cao nhất, đã giới hạn kích thước, mới được tiêm vào.
+
+Tinh chỉnh qua `.env` nếu muốn đánh đổi độ rộng truy hồi lấy dung lượng nhỏ
+hơn (tăng `RECALL_MIN_SCORE`) hoặc thu nhỏ phần tiêm hơn nữa (giảm
+`HERMES_MEMORY_MAX_CONTEXT`).
+
+## Vì sao nên dùng dự án này?
+
+Đây là so sánh khách quan — có cả điểm mạnh lẫn điều cần cân nhắc — để bạn
+tự quyết định có phù hợp với cách làm việc của mình hay không.
+
+**Điểm mạnh:**
+
+- **Nhớ thật, không phải "vá tạm".** Chat bình thường thì đóng cửa sổ là
+  quên sạch. Viết tay vào `CLAUDE.md` thì phải tự nhớ cập nhật, và nó không
+  tự "quên" khi thông tin đã lỗi thời. Ở đây việc ghi nhớ, chưng cất, và gọi
+  lại thông tin cũ đều tự động — bạn chỉ cần chat như bình thường.
+- **Dùng chung được nhiều AI agent, không phải chọn một.** Hiện hỗ trợ cả
+  Hermes Desktop và Claude Code, chạy song song trên cùng một bộ nhớ: dạy
+  điều gì đó ở agent này, agent kia tự biết — không phải giải thích lại từ
+  đầu mỗi khi đổi công cụ.
+- **Không nhất thiết tốn thêm tiền.** Có thể chạy hoàn toàn bằng chính
+  subscription bạn đã trả (Claude Code) hoặc bằng model chạy ngay trên máy
+  (Ollama) — không bắt buộc phải có API key trả phí riêng.
+- **Càng dùng lâu càng nhẹ, không phình to dần.** Với `CLAUDE.md` tĩnh,
+  càng ghi nhiều thì file càng to, và file đó bị nạp vào **mọi** lượt chat
+  dù có liên quan hay không — chi phí mỗi lượt tăng dần theo thời gian. Ở
+  đây hệ thống chỉ lấy đúng phần liên quan đến câu hỏi hiện tại, có giới hạn
+  kích thước cố định — bộ nhớ có phình to cỡ nào thì chi phí mỗi lượt chat
+  vẫn gần như không đổi.
+- **Riêng tư 100%, tự chủ hoàn toàn.** Chạy trên máy bạn, dữ liệu không
+  đồng bộ lên đâu cả, tự sao lưu mỗi đêm, tự kiểm soát hoàn toàn.
+- **Nhìn thấy được bộ nhớ, không phải "hộp đen".** Trang `/ui` cho xem toàn
+  bộ những gì hệ thống đang "nhớ" về bạn dưới dạng đồ thị trực quan — sai
+  thì sửa, thừa thì xoá, không phải đoán mò xem AI đang nhớ gì.
+- **Tự dọn dẹp, không lộn xộn dần theo thời gian.** Có cơ chế phát hiện
+  thông tin trùng lặp/diễn đạt lại và thông tin đã lỗi thời (được thay thế
+  bởi thông tin mới hơn) — không phải một đống ghi chú chồng chất vô tổ
+  chức sau vài tháng sử dụng.
+- **Chuyển máy không sợ mất dữ liệu.** Có sẵn tính năng xuất/nhập toàn bộ
+  bộ nhớ dưới dạng file — chuyển máy mới, hoặc đổi cả model embedding, vẫn
+  giữ nguyên dữ liệu.
+
+**Điều cần cân nhắc:**
+
+- Cần cài Docker và chạy thêm 1-2 container nền — tốn thêm một chút RAM/CPU
+  so với việc không dùng gì cả.
+- Có bước thiết lập ban đầu (`./setup.sh`) — tuy đã tự động hoá gần hết,
+  nhưng vẫn là một bước cài đặt thêm ngoài việc cài agent.
+- Chất lượng thông tin được "nhớ" phụ thuộc vào model dùng để chưng cất —
+  model càng yếu (ví dụ chạy Ollama trên máy yếu) thì khả năng trích xuất
+  thông tin đúng/đủ càng giảm so với dùng model mạnh.
+- Đây là dữ liệu **cá nhân, một máy** — không đồng bộ giữa nhiều máy hay
+  chia sẻ giữa nhiều người dùng (đây là lựa chọn thiết kế có chủ đích, xem
+  [ARCHITECTURE.md](ARCHITECTURE.md), không phải giới hạn kỹ thuật tạm thời).
 
 ## Cài đặt (3 bước)
 

@@ -11,31 +11,79 @@ one agent, the other recalls; records carry a `source_agent` tag).
 
 ## Architecture
 
+> Diagram uses [Mermaid](https://mermaid.js.org/) — renders natively on
+> GitHub and in VS Code/Cursor (built-in markdown preview, or the
+> "Markdown Preview Mermaid Support" extension). If your viewer shows raw
+> text instead of a picture, that's a viewer limitation, not a broken
+> file — open it on GitHub or in VS Code's preview to see it rendered.
+
+```mermaid
+flowchart TB
+    subgraph Agents["User's machine — chat agents"]
+        HD["Hermes Desktop<br/>hooks/*.py"]
+        CC["Claude Code<br/>hooks/claude/*.py"]
+    end
+
+    HD -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+    CC -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+
+    subgraph SVC["llamaindex-service — FastAPI (host :8800 → container :8000)"]
+        REST["REST API"]
+        MCP["MCP Streamable HTTP (/mcp)"]
+        ENGINE["Memory Engine<br/>L1 Working · L2 Episodic · L3 Semantic · L4 Knowledge"]
+        REST --> ENGINE
+        MCP --> ENGINE
+    end
+
+    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>hermes_chat_history · hermes_memories<br/>hermes_documents · hermes_meta")]
+    QD -.-> VOL[("volume: qdrant_data")]
+    ENGINE -.-> DVOL[("volume: hermes_data<br/>/data — original document files")]
+
+    OLLAMA["ollama (optional profile)"] -. "--profile ollama" .-> SVC
 ```
-Hermes Desktop (host)                Claude Code (host)
-   │ pre_llm_call   ► auto-inject      │ UserPromptSubmit ► auto-inject
-   │ post_llm_call  ► auto-record      │ Stop             ► auto-record
-   │ on_session_end ► auto-distill     │ SessionEnd       ► auto-distill
-   │ on_session_start ► catch-up       │ SessionStart     ► catch-up
-   │  MCP (Streamable HTTP) ──► http://localhost:8800/mcp ◄── MCP
-   ▼                                   ▼
-LlamaIndex service (Docker, 127.0.0.1:8800)
-   ├── L1 Working memory   — ChatMemoryBuffer rebuilt per session
-   ├── L2 Episodic memory  — hermes_chat_history (every turn, searchable
-   │                          semantically and per session)
-   ├── L3 Semantic memory  — hermes_memories (facts/preferences/decisions/
-   │                          tasks distilled by consolidation, with
-   │                          dedup/supersede)
-   ├── L4 Knowledge base   — hermes_documents (document RAG)
-   ├── Embedding: fastembed (local ONNX, baked into the image)
-   └── LLM (for consolidation): none | anthropic | openai | nvidia | gemini | ollama
-   ▼
-Qdrant (Docker, 127.0.0.1:6333) — named volume `qdrant_data`
-```
+
+- **L1 Working memory** — `ChatMemoryBuffer` rebuilt per session
+- **L2 Episodic memory** — `hermes_chat_history` (every turn, searchable semantically and per session)
+- **L3 Semantic memory** — `hermes_memories` (facts/preferences/decisions/tasks distilled by consolidation, with dedup/supersede)
+- **L4 Knowledge base** — `hermes_documents` (document RAG)
+- **Embedding**: fastembed (local ONNX, baked into the image)
+- **LLM (for consolidation)**: `none | anthropic | openai | nvidia | gemini | ollama`
+
+Full details (write/consolidate/recall sequence diagrams, Qdrant schema,
+multi-agent provenance...): see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The memory lifecycle is **fully automatic**: record → auto-recall →
 consolidate → controlled forgetting (`forget_about` tool) → nightly backup
 (2:00 AM, 7 kept).
+
+## How context gets built (and why it's cheap)
+
+Before every chat turn, a hook calls `POST /memory/recall`, which merges
+three sources into one context block that gets injected into the prompt
+(full sequence diagram: [ARCHITECTURE.md §3c](ARCHITECTURE.md#3-data-flows)):
+
+- **L3** — distilled facts relevant to what you just asked (semantic search over `hermes_memories`)
+- **L2** — related past conversations from *other* sessions (semantic search over `hermes_chat_history`)
+- **L1** — the current session's own recent turns
+
+Two things keep this cheap instead of turning into another growing
+`CLAUDE.md`:
+
+1. **Nothing relevant → nothing injected.** Results below `RECALL_MIN_SCORE`
+   (default `0.25`) are dropped entirely; if both L2 and L3 come back
+   empty, the context block is an empty string and the hook prints
+   nothing — zero extra tokens for that turn.
+2. **What does get injected is capped**, regardless of how much memory has
+   accumulated: `HERMES_MEMORY_MAX_CONTEXT` (default `6000` characters,
+   ≈1500-2000 tokens) truncates the Claude Code hook's injection. A
+   `CLAUDE.md` you hand-maintain gets loaded **in full, every turn**, and
+   grows as you add to it — cost per turn climbs over time. Here, cost per
+   turn stays roughly flat no matter how large the memory store gets,
+   because only the top-scoring, size-capped slice is ever injected.
+
+Tune both via `.env` if you want to trade recall breadth for a smaller
+footprint (raise `RECALL_MIN_SCORE`) or shrink the injection further
+(lower `HERMES_MEMORY_MAX_CONTEXT`).
 
 ## Why use this instead of the alternatives?
 
