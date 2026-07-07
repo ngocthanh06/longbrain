@@ -1,52 +1,46 @@
-# Hermes Memory Stack Architecture
+# Hermes Agent — Long Brain Architecture
 
 Detailed technical documentation. For quick install/usage instructions see [README.md](README.md).
 
+> Diagrams in this document use [Mermaid](https://mermaid.js.org/) fenced
+> code blocks — they render natively on GitHub/GitLab and in VS Code /
+> Cursor (built-in preview or the Markdown Preview Mermaid Support
+> extension). If your viewer shows raw text instead of a diagram, that's a
+> viewer limitation, not a broken file — open it on GitHub or in VS Code's
+> markdown preview to see it rendered.
+
 ## 1. Overview
 
-A Docker-packaged memory backend that gives Hermes Desktop long-term memory
-following a **single-user, local-first** model: each user runs an independent
-stack, all data lives entirely on their machine — no sync, no sharing.
+A Docker-packaged **long-term memory shared by multiple chat agents**,
+following a **single-user, local-first** model: each user runs an
+independent stack, all data lives entirely on their machine — no sync, no
+sharing. Today two agents ship: **Hermes Desktop** and **Claude Code**. They
+run in parallel against the *same* memory — teach one, the other recalls —
+each record tagged with which agent produced it (`source_agent`).
 
-```
-┌─ USER'S MACHINE ─────────────────────────────────────────────────────────┐
-│                                                                          │
-│  ┌─ Hermes Desktop (native app — the chat LLM runs here) ─────────────┐  │
-│  │                                                                     │  │
-│  │   hooks.post_llm_call ──────────────┐        MCP client ─────────┐ │  │
-│  └──────────────────────────────────────┼───────────────────────────┼─┘  │
-│                                         │ (after every chat turn)   │    │
-│                              hooks/post_llm_call.py                 │    │
-│                                         │ POST /memory/append       │    │
-│                                         ▼                           ▼    │
-│  ┌─ Docker Compose ────────────────────────────────────────────────────┐ │
-│  │                                                                      │ │
-│  │  ┌─ llamaindex-service (FastAPI, host :8800 → container :8000) ───┐  │ │
-│  │  │                                                                 │  │ │
-│  │  │   REST API           MCP Streamable HTTP (/mcp)                 │  │ │
-│  │  │      │                        │                                 │  │ │
-│  │  │      └────────┬───────────────┘                                 │  │ │
-│  │  │               ▼                                                 │  │ │
-│  │  │   ┌─ Memory Engine ────────────────────────────────┐            │  │ │
-│  │  │   │ L1 Working   ChatMemoryBuffer (per session)    │            │  │ │
-│  │  │   │ L2 Episodic  memory_store.py                   │            │  │ │
-│  │  │   │ L3 Semantic  memories.py + consolidation.py    │            │  │ │
-│  │  │   │ L4 Knowledge documents.py                      │            │  │ │
-│  │  │   └────────────────────────────────────────────────┘            │  │ │
-│  │  │               │                                                 │  │ │
-│  │  │   Embedding: fastembed ONNX (baked into image, local, no key)   │  │ │
-│  │  │   LLM (optional): none|anthropic|openai|nvidia|ollama           │  │ │
-│  │  └──────────────┬──────────────────────────────────────────────────┘  │ │
-│  │                 │ HTTP :6333                                          │ │
-│  │  ┌─ Qdrant ─────▼─────────────────────────────────────┐               │ │
-│  │  │ hermes_chat_history │ hermes_memories │             │               │ │
-│  │  │ hermes_documents    │ hermes_meta     │             │               │ │
-│  │  └─── volume: qdrant_data ───────────────┘             │               │ │
-│  │                                                        │               │ │
-│  │  [ollama] — optional profile (--profile ollama)        │               │ │
-│  └────────────────────────────────────────────────────────┘               │ │
-│         volume: hermes_data (/data — original document files)             │ │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Agents["User's machine — chat agents"]
+        HD["Hermes Desktop<br/>hooks/*.py"]
+        CC["Claude Code<br/>hooks/claude/*.py"]
+    end
+
+    HD -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+    CC -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+
+    subgraph SVC["llamaindex-service — FastAPI (host :8800 → container :8000)"]
+        REST["REST API"]
+        MCP["MCP Streamable HTTP (/mcp)"]
+        ENGINE["Memory Engine<br/>L1 Working · L2 Episodic · L3 Semantic · L4 Knowledge"]
+        REST --> ENGINE
+        MCP --> ENGINE
+    end
+
+    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>hermes_chat_history · hermes_memories<br/>hermes_documents · hermes_meta")]
+    QD -.-> VOL[("volume: qdrant_data")]
+    ENGINE -.-> DVOL[("volume: hermes_data<br/>/data — original document files")]
+
+    OLLAMA["ollama (optional profile)"] -. "--profile ollama" .-> SVC
 ```
 
 ## 2. The four memory layers
@@ -58,41 +52,61 @@ stack, all data lives entirely on their machine — no sync, no sharing.
 | **L3 Semantic** | Facts distilled from L2: decisions, preferences, project info, tasks — the permanently memorable stuff | `hermes_memories` | `memories.py`, `consolidation.py` |
 | **L4 Knowledge** | Ingested documents (PDF/text/markdown) — classic RAG | `hermes_documents` + original files in `/data/documents` | `documents.py` |
 
+All four layers are agent-agnostic — the engine has no idea whether a turn
+came from Hermes or Claude Code. Provenance rides along as one extra payload
+field (`source_agent`), not a structural split.
+
 ## 3. Data flows
 
 ### 3a. Write flow (every chat turn, automatic)
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant Agent as Hermes Desktop / Claude Code
+    participant Hook as hooks/*.py or hooks/claude/*.py
+    participant API as POST /memory/append
+    participant Store as memory_store.add_message()
+    participant Qdrant
+
+    User->>Agent: chats
+    Agent->>Hook: fires its post-turn event (payload on stdin)
+    Note over Hook: best-effort — never breaks the chat turn
+    Hook->>API: {session_id, user_message, assistant_response,<br/>project_id, project_source, source_agent}
+    API->>Store: add_message() per role
+    Store->>Store: embed content (fastembed, in-container)<br/>point ID = uuid5(user_id:session_id:role:sha256(content))<br/>→ IDEMPOTENT: retries never duplicate
+    Store->>Qdrant: upsert into hermes_chat_history
+    Store->>Qdrant: touch last_written_at in hermes_meta
 ```
-User chats in Hermes Desktop
-  → Hermes fires the post_llm_call event, piping JSON into the hook's stdin:
-      {session_id, extra: {user_message, assistant_response, ...}}
-  → hooks/post_llm_call.py  (best-effort, never breaks the chat turn)
-  → POST /memory/append
-  → memory_store.add_message():
-      - embed the content (fastembed, inside the container)
-      - point ID = uuid5(user_id : session_id : role : sha256(content))
-        → IDEMPOTENT: retries/duplicate writes never create new records
-      - upsert into hermes_chat_history
-      - update last_written_at in hermes_meta (to detect a dead hook)
-```
+
+The hook set differs per agent (see §7) but the contract is identical: POST
+the turn, best-effort, idempotent.
 
 ### 3b. Distillation flow (consolidation, L2 → L3)
 
-```
-On session end / on demand:
-  MCP tool consolidate_session(session_id)
-    │
-    ├─ Service HAS an LLM (LLM_PROVIDER != none):
-    │    fetch unprocessed turns → LLM extracts facts (JSON) → save_facts()
-    │    → mark turns consolidated=true
-    │
-    └─ Service has NO LLM (default):
-         return the transcript + extraction instructions to Hermes' OWN model
-         → Hermes distills it itself → calls the MCP tool save_memories(facts)
-         (turns are only marked consolidated when save_memories comes back —
-          a model that never answers just leaves the session for a later pass;
-          likewise, unparseable LLM output raises instead of counting as "no facts")
+```mermaid
+sequenceDiagram
+    participant Trigger as SessionEnd hook / periodic sweep
+    participant MCP as consolidate_session (MCP tool)
+    participant Engine
+    participant Model as Agent's own LLM
+    participant Qdrant
 
+    Trigger->>MCP: consolidate_session(session_id)
+    alt Service HAS an LLM (LLM_PROVIDER != none)
+        MCP->>Engine: fetch unprocessed turns
+        Engine->>Engine: LLM extracts facts (JSON)
+        Engine->>Qdrant: save_facts() + mark turns consolidated=true
+    else Service has NO LLM (default)
+        MCP-->>Model: return transcript + extraction instructions
+        Model->>Model: distills it itself
+        Model->>MCP: calls save_memories(facts)
+        MCP->>Qdrant: save_facts() + mark turns consolidated=true
+        Note over MCP: turns only marked consolidated when save_memories<br/>comes back — a model that never answers leaves the<br/>session for a later pass. Unparseable output raises<br/>instead of silently counting as "no facts"
+    end
+```
+
+```
 save_facts() deduplicates on two levels:
   1. Exact hash (point ID from sha256 of normalized text) → skip if duplicate
   2. Similarity ≥ 0.92 with a currently active fact → the old fact is marked
@@ -101,17 +115,17 @@ save_facts() deduplicates on two levels:
 
 ### 3c. Read flow (recall)
 
-```
-POST /memory/recall {query, session_id?}   (or the MCP tool memory_recall)
-  │
-  ├─ L3: search hermes_memories (filter out superseded)
-  │      score = similarity × 0.5^(age/90 days) × (0.5 + 0.5×importance)
-  ├─ L2: search hermes_chat_history across sessions (excluding the current one)
-  │      score = similarity × 0.5^(age/30 days)
-  └─ L1: the N most recent turns of the current session (chronological)
-  │
-  └→ context_block ready to inject into the system prompt:
-       [Long-term memories] … [Related past conversations] … [Most recent turns] …
+```mermaid
+sequenceDiagram
+    participant Caller as POST /memory/recall or MCP memory_recall
+    participant Engine
+    participant Qdrant
+
+    Caller->>Engine: {query, session_id?, project?}
+    Engine->>Qdrant: search hermes_memories (L3, filter out superseded)<br/>score = similarity × 0.5^(age/90d) × (0.5+0.5×importance)
+    Engine->>Qdrant: search hermes_chat_history (L2, other sessions)<br/>score = similarity × 0.5^(age/30d)
+    Engine->>Engine: L1 — N most recent turns of the current session
+    Engine-->>Caller: context_block:<br/>[Long-term memories] … [Related past conversations] … [Most recent turns] …
 ```
 
 ## 4. Qdrant schema
@@ -125,11 +139,13 @@ model (default 384 — `paraphrase-multilingual-MiniLM-L12-v2`).
 {
   "user_id": "local",        // payload index — ready for future multi-user
   "session_id": "…",         // payload index
-  "project_id": "erp",       // payload index — sidebar project (see section 11)
+  "project_id": "erp",       // payload index — see §10 (project partitioning)
   "role": "user|assistant",  // payload index
   "content": "…",
   "timestamp": 1783229012.9, // payload index (float)
-  "consolidated": false      // payload index — distilled yet or not
+  "consolidated": false,     // payload index — distilled yet or not
+  "source_agent": "hermes"   // optional — "hermes" | "claude-code"; absent on
+                              // records written before provenance was added
 }
 ```
 
@@ -144,7 +160,8 @@ model (default 384 — `paraphrase-multilingual-MiniLM-L12-v2`).
   "text": "…",
   "importance": 0.8,              // 0..1
   "created_at": 1783229012.9,
-  "superseded_by": "<point-id>"   // only present when replaced by a newer fact
+  "superseded_by": "<point-id>",  // only present when replaced by a newer fact
+  "source_agent": "claude-code"   // optional — inherited from the session's first turn
 }
 ```
 
@@ -163,8 +180,8 @@ current config against the meta — **an embedding mismatch refuses to boot**
 | | Embedding | LLM |
 |---|---|---|
 | Role | Determines the vector space — **pick once** | Only used for consolidation + `/chat` — **swap freely** |
-| Default | `fastembed` (local ONNX, baked into the image, no key, no GPU) | `none` (Hermes' own model distills via MCP) |
-| Options | `ollama`, `openai`, `nvidia` | `anthropic`, `openai`, `nvidia`, `ollama` |
+| Default | `fastembed` (local ONNX, baked into the image, no key, no GPU) | `none` (the agent's own model distills via MCP) |
+| Options | `ollama`, `openai`, `nvidia` | `anthropic`, `openai`, `nvidia`, `gemini`, `ollama` |
 | How to change | Backup → `docker compose down -v` → edit .env → re-ingest (the meta guard blocks silent changes) | Edit `.env` + API key → `docker compose up -d` |
 
 `fastembed` is **hard-pinned** in requirements.txt — this library has changed
@@ -177,41 +194,55 @@ between two image builds can silently diverge.
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | Status + `last_written_at` + point counts per collection |
-| `POST /memory/append` | Record one conversation turn (called by the hook) — idempotent |
+| `POST /memory/append` | Record one conversation turn (called by a hook) — idempotent |
 | `POST /memory/recall` | Combined recall of L1+L2+L3 → context_block |
 | `POST /memory/facts` | Save distilled facts |
 | `POST /memory/search` | Search L3 |
 | `POST /memory/consolidate` | Distill (requires LLM; `background: true` for hooks) |
 | `GET /memory/pending-consolidation` | Sessions awaiting distillation |
+| `POST /memory/consolidate-pending` | Debounced catch-up sweep over all pending sessions |
 | `GET /memory/facts` · `DELETE /memory/facts/{id}` | List / forget facts |
 | `GET /memory/graph` | Facts as nodes + similarity edges (feeds `/ui`) |
-| `GET /ui` | Memory browser (graph + list, filters, semantic search, re-tagging) |
+| `GET /ui` | Memory browser — galaxy graph + list view, filters, semantic search, re-tagging |
 | `PATCH /memory/facts/{id}` | Move one fact to another project |
 | `PATCH /memory/facts` | Bulk move: `{ids: [...], project_id}` (multi-select in `/ui`) |
 | `PATCH /sessions/{id}/project` | Re-tag a whole session (turns + its facts; future turns follow) |
 | `PATCH /memory/projects/{slug}` | Rename a project across chat history, facts and documents |
 | `DELETE /sessions/{id}` | Delete an entire session |
-| `POST /ingest/text` `/ingest/file` | Ingest documents into L4 |
+| `DELETE /memory/all` | Full wipe — requires `?confirm=DELETE%20ALL` |
+| `GET /memory/export` | Download every fact/turn/document chunk as one JSON bundle (see §12) |
+| `POST /memory/import` | Re-embed and upsert a bundle produced by `/memory/export` |
+| `POST /ingest/text` · `/ingest/file` | Ingest documents into L4 |
 | `POST /query` | Search L4 |
 | `POST /chat` | Chat directly with the service (requires LLM; 503 if `none`) |
-| `GET /sessions` `/sessions/{id}/history` | List sessions / session contents |
+| `GET /projects` | List known project slugs |
+| `GET /sessions` · `/sessions/{id}/history` | List sessions / session contents |
 
 ### MCP tools (`http://localhost:8800/mcp`, Streamable HTTP)
 `memory_recall` · `memory_append` · `consolidate_session` · `save_memories` ·
-`list_memories` · `forget_about` · `forget_memory` · `search_history` ·
-`list_sessions` · `list_projects` · `search_knowledge_base` ·
-`add_to_knowledge_base` — all search/write tools accept an optional `project` param.
+`list_memories` · `forget_about` · `forget_memory` · `forget_session` ·
+`forget_everything` · `search_history` · `list_sessions` · `list_projects` ·
+`search_knowledge_base` · `add_to_knowledge_base` — all search/write tools
+accept an optional `project` param.
 
-## 7. Hermes integration — 3 touch points
+## 7. Agent integration — two adapters on a shared core
+
+The memory engine has no agent-specific code. Each agent gets a thin adapter:
+a handful of lifecycle hooks that call the same REST/MCP surface above. This
+is a deliberate architectural choice (see §8) — adding a third agent means
+writing another adapter, not touching the engine.
+
+### 7a. Hermes Desktop
 
 `setup.sh` → `scripts/configure_hermes.py` automates everything (idempotent):
 
-1. **`~/.hermes/config.yaml`**: 3 hooks + `hooks_auto_accept: true` + MCP server:
+1. **`~/.hermes/config.yaml`**: 4 hooks + `hooks_auto_accept: true` + MCP server:
    - `post_llm_call` → record every chat turn into memory (with the project from cwd)
    - `pre_llm_call` → auto-inject memory: recall based on user_message, return
      `{"context": ...}` (Hermes' official contract) — the model no longer has
      to remember to call a tool
    - `on_session_end` → trigger background consolidation for the session that just ended
+   - `on_session_start` → debounced catch-up sweep when Desktop opens
    Additionally: borrows an API key from `~/.hermes/.env` (NVIDIA → Gemini) for
    auto-consolidation, installs the 2:00 AM launchd backup (7-copy retention), and
    adds a **memory-routing block to `~/.hermes/SOUL.md`** — Hermes has a built-in
@@ -226,36 +257,98 @@ between two image builds can silently diverge.
    for Desktop chats (CLI works, Desktop silently doesn't). The patch adds `"serve"`.
    ⚠️ **A Hermes update overwrites the patch — re-run `./setup.sh` after every update.**
 
-## 8. Operations
+### 7b. Claude Code
+
+`setup.sh` → `scripts/configure_claude.py` (idempotent, skipped if the `claude`
+CLI isn't found):
+
+1. **`~/.claude/settings.json`**: 4 hooks mirroring the same lifecycle —
+   `UserPromptSubmit` (auto-inject recall), `Stop` (record the turn —
+   prefers the payload's `last_assistant_message`, since the transcript file
+   hasn't always flushed the closing reply when the hook fires),
+   `SessionEnd` (consolidate), `SessionStart` (catch-up sweep, no output —
+   `UserPromptSubmit` already owns context injection).
+2. **MCP registration**: `claude mcp add --scope user --transport http
+   hermes-memory http://localhost:8800/mcp` — available in every project.
+3. **Optional `~/.claude/CLAUDE.md` block** (consent-gated, interactive only):
+   tells Claude to prefer the `mcp__hermes-memory__*` tools over its own
+   built-in file-based auto-memory when both are available.
+
+**No API key anywhere on this path** — Claude Code runs on its own
+subscription login; consolidation uses the service-side LLM or the
+`consolidate_session` MCP tool (the agent's own model distills).
+
+## 8. Multi-agent operation & provenance
+
+**Why two adapters instead of "the Hermes stack":** Hermes Desktop only
+accepts an API key, not a Claude subscription login — a real barrier for
+users who pay for Claude Pro/Max but have no API key. Claude Code (and
+similarly Codex-style CLIs) log in with the subscription directly. The
+memory engine was already agent-agnostic by construction, so the fix was
+additive: a second adapter, not a rewrite. The repo's framing shifted from
+"memory stack for Hermes" to "long brain + N adapters."
+
+**Running Hermes and Claude Code in parallel** works with no explicit
+"switch" — both adapters' hooks are registered independently and write to
+the same service:
+- **Project-slug coherence.** The Claude Code resolver tries Hermes'
+  `projects.db` first (matching the session's `cwd` against folder-anchored
+  projects) so a shared workspace gets the *same* slug from both agents;
+  only if that misses does it fall back to the git-root folder name, then
+  `"default"`. This means a project touched from both agents stays one
+  cluster, not two.
+- **Provenance, not partitioning.** Every write carries `source_agent`
+  (`"hermes"` | `"claude-code"`), visible in `/ui`'s detail panel and
+  preserved through consolidation (a distilled fact inherits its source
+  session's `source_agent`) and through export/import bundles. It's pure
+  metadata — recall, dedup/supersede and project partitioning all ignore it,
+  so "which agent said it" never affects what a query returns.
+- **Session stickiness still applies per session** (see §10) — a session
+  started by one agent doesn't get silently re-tagged by the other.
+
+## 9. Operations
 
 - **Liveness check**: `curl localhost:8800/health` — `last_written_at` must
   advance after every chat turn. Visual view: `http://localhost:6333/dashboard`.
-- **Hook diagnostics**: `hermes hooks doctor` · raw payloads of every hook
-  invocation live in `logs/hook-debug.jsonl`.
-- **Backup**: `./scripts/backup.sh` — snapshots every collection into `./backups/`.
+- **Hook diagnostics**: `hermes hooks doctor` (Hermes) · raw payloads of
+  every hook invocation live in `logs/hook-debug.jsonl` (Hermes) and
+  `logs/claude-hook-debug.jsonl` (Claude Code).
+- **Backup**: `./scripts/backup.sh` — snapshots every collection into
+  `./backups/` (binary, same-machine restore only — see §12 for moving to
+  another machine or embedding model).
 - **Data**: named volumes `qdrant_data` (vectors) + `hermes_data` (original files).
   `docker compose down -v` = wipe everything and start over.
 - **Ports**: 8800 (service — keeps 8000 free for Hermes' hindsight server),
   6333/6334 (Qdrant), 11434 (Ollama if the profile is enabled).
 
-## 9. Source layout
+## 10. Source layout
 
 ```
 hermes-agent/
-├── setup.sh                     # one-command install: Docker + automatic Hermes wiring
+├── setup.sh                     # one-command install: Docker + auto-wiring for every installed agent
 ├── docker-compose.yml           # qdrant + llamaindex (+ optional ollama profile)
 ├── .env.example                 # provider/collection configuration
 ├── ARCHITECTURE.md              # this document
+├── UPGRADE_PLAN.md              # roadmap + progress
 ├── hooks/
-│   ├── post_llm_call.py         # record each turn (project resolution: folder → active sidebar → default)
-│   ├── pre_llm_call.py          # auto-inject recalled memory into every turn
-│   ├── on_session_end.py        # trigger consolidation when a session finishes
-│   └── on_session_start.py      # debounced catch-up sweep when Desktop opens
+│   ├── post_llm_call.py         # Hermes: record each turn (project resolution: folder → active sidebar → default)
+│   ├── pre_llm_call.py          # Hermes: auto-inject recalled memory into every turn
+│   ├── on_session_end.py        # Hermes: trigger consolidation when a session finishes
+│   ├── on_session_start.py      # Hermes: debounced catch-up sweep when Desktop opens
+│   └── claude/                  # Claude Code adapter — same lifecycle, 4 hooks
+│       ├── common.py            #   shared HTTP/project-resolution helpers
+│       ├── user_prompt_submit.py
+│       ├── stop.py
+│       ├── session_end.py
+│       └── session_start.py
 ├── scripts/
 │   ├── configure_hermes.py      # auto-patch config.yaml + consent + serve bug + app restart
-│   └── backup.sh                # Qdrant snapshots (nightly via launchd)
+│   ├── configure_claude.py      # auto-wire Claude Code (settings.json hooks + MCP registration)
+│   ├── backup.sh                # Qdrant snapshots (nightly via launchd)
+│   └── memory_transfer.sh       # text-level export/import for device migration (§12)
 ├── logs/
-│   └── hook-debug.jsonl         # raw payload of every hook run (diagnostics)
+│   ├── hook-debug.jsonl         # raw payload of every Hermes hook run (diagnostics)
+│   └── claude-hook-debug.jsonl  # same, for the Claude Code adapter
 └── llamaindex-service/
     ├── Dockerfile               # fastembed model baked in
     ├── requirements.txt         # fastembed hard-pinned ==0.7.4
@@ -270,48 +363,52 @@ hermes-agent/
         ├── memories.py          # L3: save_facts (dedup/supersede) + recall + decay + graph data
         ├── consolidation.py     # L2→L3 distillation (prompt + parsing + handouts)
         ├── documents.py         # L4: document ingest + original file retention
+        ├── transfer.py          # text-level export/import bundle (§12)
         ├── mcp_server.py        # MCP tools (Streamable HTTP at /mcp)
         ├── scheduler.py         # event-driven consolidation sweeps
         ├── runtime.py           # state shared between REST and MCP
         └── ui.html              # self-contained memory browser (served at /ui)
 ```
 
-## 10. Per-project memory (project partitioning)
+## 11. Per-project memory (project partitioning)
 
-Memory is partitioned by **Hermes Desktop sidebar project** — not with separate
-collections, but with a `project_id` field (payload-indexed) across all 3 data
-layers, following Qdrant's multitenancy recommendation.
+Memory is partitioned by **project** — not with separate collections, but
+with a `project_id` field (payload-indexed) across all 3 data layers,
+following Qdrant's multitenancy recommendation. Each agent resolves
+`project_id` its own way, but both write to the same field.
 
-**The source of truth is Hermes itself.** Hermes' sidebar projects live in
-`~/.hermes/projects.db` (tables `projects` + `project_folders`; each project is
-anchored to one or more folders). There is no separate mapping file to maintain.
+**Hermes: sidebar projects are the source of truth.** They live in
+`~/.hermes/projects.db` (tables `projects` + `project_folders`; each project
+is anchored to one or more folders). There is no separate mapping file to
+maintain.
 
-**Project-tagging flow (100% automatic):**
+```mermaid
+flowchart TD
+    A["Chat turn arrives<br/>(hook receives cwd)"] --> B{"cwd matches a folder<br/>in ~/.hermes/projects.db?"}
+    B -- "yes — longest prefix wins,<br/>ties go to most recently created" --> P1["project_id = that project<br/>source = folder"]
+    B -- no --> C{"Hermes hook only:<br/>sidebar has an active project?"}
+    C -- yes --> P2["project_id = active project<br/>source = active"]
+    C -- "no / Claude Code hook" --> D{"Claude Code only:<br/>git root folder name?"}
+    D -- yes --> P3["project_id = slugified folder name<br/>source = folder"]
+    D -- no --> P4["project_id = default<br/>source = default"]
 ```
-Chat in Hermes (anywhere)
-  → the hook payload already contains "cwd" (the chat session's working directory)
-  → hooks/post_llm_call.py resolves, in priority order:
-      1. longest-prefix match of cwd against each project's folders
-         (child project beats parent, e.g. /work/erp beats /work; two projects
-         sharing a folder → the most recently created one wins, logged as a
-         conflict warning in hook-debug.jsonl)
-      2. the project currently SELECTED in the sidebar (project_meta.active_id)
-         — chat-only projects need no folder at all
-      3. "default"
-  → project_id rides along with /memory/append and is stored in the payload
-  → SESSION STICKINESS (server-side): a session that already has stored turns
-    keeps its founding project — resuming an old chat while the sidebar
-    points elsewhere does not re-tag its new turns.
-    Exception: a FOLDER-sourced tag (the session's cwd really moved — Hermes'
-    project_switch tool is the intentional way to move a session between
-    projects) overrides stickiness; ambient signals (sidebar selection) never do.
+
+```
+project_id rides along with /memory/append and is stored in the payload.
+
+SESSION STICKINESS (server-side): a session that already has stored turns
+keeps its founding project — resuming an old chat while the sidebar/cwd
+points elsewhere does not re-tag its new turns.
+Exception: a FOLDER-sourced tag (the session's cwd really moved — Hermes'
+project_switch tool, or a Claude Code session literally opened elsewhere)
+overrides stickiness; ambient signals (sidebar selection) never do.
 ```
 
 **Recall flow:**
 - `memory_recall(query, session_id)` — the service infers the project from the
   session's own stored messages (nobody has to declare it). For a brand-new
-  session with no messages yet, pass `project` explicitly (Hermes' model can
-  call `list_projects` to discover slugs).
+  session with no messages yet, pass `project` explicitly (an agent's model
+  can call `list_projects` to discover slugs).
 - **Soft boost instead of a hard filter** for memories/conversations:
   same-project scores × `RECALL_PROJECT_BOOST` (default 1.5). Memories from
   other projects can still surface when genuinely relevant — exactly the value
@@ -320,16 +417,49 @@ Chat in Hermes (anywhere)
   documents answering project B's questions is usually noise.
 
 Old data without a `project_id` is treated as `"default"` — no migration
-needed. Creating a new project in the sidebar is picked up automatically, with
-zero extra configuration.
+needed. Creating a new project (a new Hermes sidebar entry, or a new folder
+Claude Code opens in) is picked up automatically, with zero extra
+configuration.
 
-## 11. Extension directions (cost already prepaid)
+## 12. Transfer — moving to another machine or embedding model
+
+Nightly snapshots (`scripts/backup.sh`) are binary Qdrant collection dumps —
+they restore the *same* machine, but can't move memory to a new install that
+might run a different embedding model. `transfer.py` solves that with a
+**text-level** bundle:
+
+```
+GET /memory/export
+  → scrolls hermes_chat_history + hermes_memories + hermes_documents
+  → bundle = { format, version, facts[], turns[], documents[] }
+     (payload text + metadata only — NO vectors, so the bundle is
+      independent of whichever embedding model produced it)
+
+POST /memory/import <bundle>
+  → re-embeds every record with the CURRENT model
+  → upserts using the SAME deterministic point-ID scheme as live writes
+     → already-present records are skipped — safe to import twice
+  → preserves original timestamps / superseded_by / consolidated / source_agent
+     (imported sessions are not re-distilled; recall decay keeps working)
+  → bypasses save_facts' supersede-similarity check deliberately — the
+     bundle already encodes its supersede state
+```
+
+`scripts/memory_transfer.sh export|import` wraps both endpoints for the CLI;
+the `/ui` header also has `⇩ Export` / `⇪ Import` buttons with a
+confirmation dialog showing the bundle's counts before writing anything.
+
+## 13. Extension directions (cost already prepaid)
 
 - Every payload carries a `user_id` (default `"local"`) and deterministic point
   IDs → moving to a shared multi-user server later is just adding auth +
   changing the value, not migrating data.
 - Changing the embedding model: create new collections → re-embed from the
-  original files (L4) and payload content (L2/L3) → flip an alias. The meta
-  guard guarantees two vector spaces are never mixed.
+  original files (L4) and payload content (L2/L3) → flip an alias, or use
+  the export/import bundle (§12) end to end. The meta guard guarantees two
+  vector spaces are never mixed.
+- Adding a third agent adapter: a hook set that POSTs to the same
+  `/memory/append` / `/memory/recall` contract (§3a, §3c) plus a project
+  resolver (§11) — the engine needs no changes (see §8).
 - Deliberately not built yet (for simplicity): TTL/automatic forgetting, hybrid
   search (dense+sparse), auth — enable when there is a real need.
