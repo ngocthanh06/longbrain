@@ -443,3 +443,151 @@ def test_recall_context_block_shows_source_agent(client):
     assert ", hermes) user: hello from hermes" in block
     # a record without the tag renders without a dangling separator
     assert ") untagged legacy fact" in block and ", ) untagged" not in block
+
+
+# ---------------------------------------------------------------------------
+# recall router: docs channel on trigger words only
+# ---------------------------------------------------------------------------
+def _seed_doc_chunk(client, text, source, project, vector):
+    import json as _json
+    import uuid as _uuid
+
+    from qdrant_client.http import models as qmodels
+    if not client.collection_exists(config.DOCUMENTS_COLLECTION):
+        # In production LlamaIndex creates this collection lazily on the
+        # first document insert; tests seed raw points, so create it here.
+        client.create_collection(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            vectors_config=qmodels.VectorParams(
+                size=DIM, distance=qmodels.Distance.COSINE),
+        )
+    client.upsert(
+        collection_name=config.DOCUMENTS_COLLECTION,
+        points=[qmodels.PointStruct(
+            id=str(_uuid.uuid4()), vector=vector,
+            payload={"_node_content": _json.dumps({"text": text}),
+                     "source": source, "project_id": project},
+        )],
+    )
+
+
+def test_route_query_triggers():
+    assert memories.route_query("xem tài liệu spec giúp tôi")["docs"] is True
+    assert memories.route_query("エラーの指示書を確認して")["docs"] is True
+    assert memories.route_query("sửa bug này đi")["docs"] is False
+    assert memories.route_query("lần trước đã bàn gì?")["history_hint"] is True
+    assert memories.route_query("build lại service")["history_hint"] is False
+
+
+def test_recall_includes_docs_only_when_triggered(client):
+    embed = FakeEmbed()
+    _seed_doc_chunk(client, "File size limit is 10MB per upload.",
+                    "upload-spec.md", "proj-a", [1.0, 0.0])
+    triggered = memories.recall(client, embed, "tài liệu spec nói gì về upload?",
+                                project="proj-a", recent_turns=0)
+    assert triggered["routing"]["docs"] is True
+    assert "[Project documents]" in triggered["context_block"]
+    assert "10MB" in triggered["context_block"]
+    assert triggered["documents"][0]["source"] == "upload-spec.md"
+
+    untriggered = memories.recall(client, embed, "upload đang lỗi gì?",
+                                  project="proj-a", recent_turns=0)
+    assert untriggered["routing"]["docs"] is False
+    assert "[Project documents]" not in untriggered["context_block"]
+    assert untriggered["documents"] == []
+
+
+def test_recall_docs_hard_filtered_by_project(client):
+    embed = FakeEmbed()
+    _seed_doc_chunk(client, "Booking slots every 15 minutes.",
+                    "booking-spec.md", "proj-b", [1.0, 0.0])
+    r = memories.recall(client, embed, "tài liệu spec về slot?",
+                        project="proj-a", recent_turns=0)
+    assert r["documents"] == []  # proj-b's doc must not cross into proj-a
+
+
+# ---------------------------------------------------------------------------
+# session summaries: stored per session, replace raw snippets in recall,
+# never leak into fact search / listings
+# ---------------------------------------------------------------------------
+def test_session_summary_upsert_overwrites(client):
+    embed = FakeEmbed()
+    memories.save_session_summary(client, embed, "s-sum", "first version")
+    memories.save_session_summary(client, embed, "s-sum", "second version")
+    got = memories.get_session_summaries(client, ["s-sum"])
+    assert got["s-sum"]["text"] == "second version"
+
+
+def test_recall_prefers_summary_over_raw_snippets(client):
+    embed = FakeEmbed()
+    memory_store.add_message(client, embed, "s-old", "assistant",
+                             "raw detail about the deploy fix")
+    memory_store.add_message(client, embed, "s-none", "assistant",
+                             "another session without summary")
+    memories.save_session_summary(
+        client, embed, "s-old",
+        "Fixed staging deploy: healthcheck start_period raised to 30s.",
+        source_agent="claude-code")
+    r = memories.recall(client, embed, "deploy fix?", recent_turns=0)
+    block = r["context_block"]
+    assert "[Session summaries" in block
+    assert "start_period raised" in block
+    assert ", claude-code)" in block
+    # raw snippet of the summarized session is suppressed...
+    assert "raw detail about the deploy fix" not in block
+    # ...but sessions without a summary still show raw snippets
+    assert "another session without summary" in block
+
+
+def test_summaries_excluded_from_fact_search_and_listing(client):
+    embed = FakeEmbed()
+    memories.save_session_summary(client, embed, "s-x", "summary text here")
+    memories.save_facts(client, embed, [{"text": "a real fact"}])
+    hits = memories.search_memories(client, embed, "anything", top_k=10)
+    assert all(h["type"] != "session_summary" for h in hits)
+    assert all(f["type"] != "session_summary" for f in memories.list_facts(client))
+    graph_types = {n["type"] for n in memories.graph_data(client)["nodes"]}
+    assert "session_summary" not in graph_types
+
+
+# ---------------------------------------------------------------------------
+# global vs project scope: other projects' facts/history stay out of
+# auto-recall; preferences and default-project knowledge are global
+# ---------------------------------------------------------------------------
+def test_project_query_excludes_other_projects_facts(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "proj-b decision about imports"}],
+                        project_id="proj-b")
+    hits = memories.search_memories(client, embed, "imports?", project="proj-a")
+    assert hits == []  # hard-scoped out, no longer just down-ranked
+
+
+def test_preferences_and_default_project_are_global(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed,
+                        [{"text": "commit without extra trailers", "type": "preference"}],
+                        project_id="proj-b")  # preference saved under ANOTHER project
+    memories.save_facts(client, embed, [{"text": "user timezone is UTC+7"}])  # default project
+    texts = [h["text"] for h in
+             memories.search_memories(client, embed, "anything", project="proj-a", top_k=10)]
+    assert "commit without extra trailers" in texts
+    assert "user timezone is UTC+7" in texts
+
+
+def test_history_scoped_to_project_plus_default(client):
+    embed = FakeEmbed()
+    memory_store.add_message(client, embed, "s-b", "assistant", "proj-b deploy detail",
+                             project_id="proj-b")
+    memory_store.add_message(client, embed, "s-d", "assistant", "default session detail",
+                             project_id="default")
+    contents = [h["content"] for h in memory_store.search_history(
+        client, embed, "detail?", project="proj-a", top_k=10)]
+    assert "proj-b deploy detail" not in contents
+    assert "default session detail" in contents
+
+
+def test_no_project_means_no_scoping(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "proj-b only fact"}], project_id="proj-b")
+    texts = [h["text"] for h in memories.search_memories(client, embed, "fact?", top_k=10)]
+    assert "proj-b only fact" in texts

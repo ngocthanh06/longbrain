@@ -60,14 +60,19 @@ def _register_tools() -> None:
         return f"Stored {n} message(s) for session {session_id}."
 
     @mcp.tool()
-    def save_memories(facts: list[Fact], session_id: str = "", project: str = "") -> str:
+    def save_memories(
+        facts: list[Fact], session_id: str = "", project: str = "",
+        session_summary: str = "",
+    ) -> str:
         """Save distilled long-term facts (decisions, preferences, project info,
         constraints, tasks) into semantic memory. Near-duplicate existing facts
         are superseded by the new version automatically. Facts inherit the
         session's project unless `project` (a Hermes project slug) is given.
         If this follows a consolidate_session handout, the session's turns are
         marked consolidated now — pass the same session_id (an empty facts
-        list is fine when nothing was worth keeping)."""
+        list is fine when nothing was worth keeping) and pass the 2-4 sentence
+        `session_summary` the handout instructions asked for (goal, decisions,
+        unresolved) so future recall can show it instead of raw snippets."""
         client = state["qdrant_client"]
         project_id = project or (
             memory_store.get_session_project(client, session_id) if session_id
@@ -79,18 +84,23 @@ def _register_tools() -> None:
             session_id=session_id, project_id=project_id,
             llm=state.get("llm"),
         )
+        summary_saved = memories.save_session_summary(
+            client, state["embed_model"], session_id, session_summary,
+            project_id=project_id,
+        )["status"] == "ok"
         # Close the consolidation loop: turns handed out by consolidate_session
         # only count as consolidated once the extraction actually came back.
         handout = consolidation.pop_handout(session_id) if session_id else []
         if handout:
             memory_store.mark_consolidated(client, handout)
+        suffix = " Session summary stored." if summary_saved else ""
         if not results:
             return "Nothing to save." + (
                 f" Marked {len(handout)} turn(s) consolidated." if handout else ""
-            )
+            ) + suffix
         return f"(project: {project_id})\n" + "\n".join(
             f"[{r['status']}] {r['text']}" for r in results
-        )
+        ) + suffix
 
     @mcp.tool()
     def consolidate_session(session_id: str) -> str:
@@ -121,8 +131,9 @@ def _register_tools() -> None:
         )
         return (
             f"{instructions}\n\n"
-            f"After extracting, call save_memories(facts, session_id={session_id!r}) — "
-            f"even with an empty facts list if nothing qualifies.\n\n"
+            f"After extracting, call save_memories(facts, session_id={session_id!r}, "
+            f"session_summary=<the summary you produced>) — even with an empty "
+            f"facts list if nothing qualifies.\n\n"
             f"<transcript>\n{transcript}\n</transcript>"
         )
 

@@ -225,6 +225,15 @@ def search_history(
     is given, same-project hits get a soft score boost."""
     vector = embed_model.get_text_embedding(query)
     flt = _user_filter(user_id)
+    if project:
+        # Same scoping rule as fact recall: another project's conversations
+        # stay out of auto-recall (default-project sessions still pass).
+        # Cross-project history remains reachable by searching without a
+        # project through the MCP tools.
+        flt.must.append(qmodels.FieldCondition(
+            key="project_id",
+            match=qmodels.MatchAny(any=[project, config.DEFAULT_PROJECT]),
+        ))
     if exclude_session:
         flt.must_not = [
             qmodels.FieldCondition(

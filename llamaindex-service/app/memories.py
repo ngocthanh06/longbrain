@@ -17,7 +17,7 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
-from app import config, memory_store
+from app import config, documents, memory_store
 
 _NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
@@ -52,6 +52,11 @@ def fact_point_id(user_id: str, text: str, project_id: str = "") -> str:
     digest = hashlib.sha256(" ".join(text.split()).lower().encode("utf-8")).hexdigest()
     scope = project_id or config.DEFAULT_PROJECT
     return str(uuid.uuid5(_NAMESPACE, f"fact:{user_id}:{scope}:{digest}"))
+
+
+def summary_point_id(user_id: str, session_id: str) -> str:
+    """One summary per session: re-consolidating overwrites in place."""
+    return str(uuid.uuid5(_NAMESPACE, f"summary:{user_id}:{session_id}"))
 
 
 def _active_filter(user_id: str, extra: list | None = None) -> qmodels.Filter:
@@ -183,8 +188,86 @@ def save_facts(
     return results
 
 
+def save_session_summary(
+    client: QdrantClient,
+    embed_model,
+    session_id: str,
+    text: str,
+    user_id: str = config.USER_ID,
+    project_id: str = config.DEFAULT_PROJECT,
+    source_agent: str = "",
+) -> dict:
+    """Store the structured summary of a finished session (goal, decisions,
+    unresolved). Lives in the memories collection as type=session_summary but
+    is NOT a fact: excluded from fact search/listing, surfaced by recall in
+    place of that session's raw snippets."""
+    text = (text or "").strip()
+    if not text or not session_id:
+        return {"status": "skipped"}
+    payload = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "project_id": project_id or config.DEFAULT_PROJECT,
+        "type": "session_summary",
+        "text": text,
+        "created_at": time.time(),
+    }
+    if source_agent:
+        payload["source_agent"] = source_agent
+    client.upsert(
+        collection_name=config.MEMORIES_COLLECTION,
+        points=[qmodels.PointStruct(
+            id=summary_point_id(user_id, session_id),
+            vector=embed_model.get_text_embedding(text),
+            payload=payload,
+        )],
+    )
+    return {"status": "ok", "session_id": session_id}
+
+
+def get_session_summaries(
+    client: QdrantClient, session_ids, user_id: str = config.USER_ID
+) -> dict:
+    """session_id -> summary payload, for the given sessions only."""
+    ids = [s for s in set(session_ids) if s]
+    if not ids:
+        return {}
+    points, _ = client.scroll(
+        collection_name=config.MEMORIES_COLLECTION,
+        scroll_filter=qmodels.Filter(must=[
+            qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
+            qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary")),
+            qmodels.FieldCondition(key="session_id", match=qmodels.MatchAny(any=ids)),
+        ]),
+        limit=len(ids),
+        with_payload=True,
+        with_vectors=False,
+    )
+    return {
+        p.payload["session_id"]: {
+            "text": p.payload.get("text", ""),
+            "created_at": p.payload.get("created_at"),
+            "source_agent": p.payload.get("source_agent") or "",
+        }
+        for p in points
+    }
+
+
 def _decay(age_seconds: float, half_life_days: float) -> float:
     return math.pow(0.5, age_seconds / (half_life_days * 86400.0))
+
+
+def route_query(query: str) -> dict:
+    """Rule-based recall router (no LLM): which memory channels does this
+    prompt actually need? Facts and history stay always-on (cheap, small);
+    the documents channel activates only on trigger words ("tài liệu",
+    "spec", "指示書", ...) because doc chunks are the biggest injection.
+    history_hint is surfaced for observability/tuning, not yet gating."""
+    q = query.lower()
+    return {
+        "docs": any(t in q for t in config.RECALL_DOC_TRIGGERS),
+        "history_hint": any(t in q for t in config.RECALL_HISTORY_TRIGGERS),
+    }
 
 
 def search_memories(
@@ -196,10 +279,30 @@ def search_memories(
     project: str | None = None,
 ) -> list[dict]:
     vector = embed_model.get_text_embedding(query)
+    flt = _active_filter(user_id)
+    # Session summaries share this collection but are not facts — recall
+    # surfaces them per matched session, not in [Long-term memories].
+    flt.must_not = [
+        qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary"))
+    ]
+    if project:
+        # Scope: project-anchored knowledge (facts/decisions/tasks) from
+        # OTHER projects stays out of auto-recall — asking about project A
+        # must not surface project B's decisions. Preferences are global by
+        # nature (commit style, language, workflow) and pass regardless;
+        # so does anything stored under the default project. Cross-project
+        # lookups stay available through the explicit MCP search tools.
+        flt.should = [
+            qmodels.FieldCondition(
+                key="project_id",
+                match=qmodels.MatchAny(any=[project, config.DEFAULT_PROJECT]),
+            ),
+            qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="preference")),
+        ]
     hits = client.search(
         collection_name=config.MEMORIES_COLLECTION,
         query_vector=vector,
-        query_filter=_active_filter(user_id),
+        query_filter=flt,
         limit=top_k * 3,  # over-fetch, then rerank by decayed/boosted score
         with_payload=True,
     )
@@ -246,9 +349,16 @@ def list_facts(
         must.append(qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project)))
     if ftype:
         must.append(qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value=ftype)))
+    flt = qmodels.Filter(must=must)
+    if ftype != "session_summary":
+        # Summaries are per-session artifacts, not facts — keep them out of
+        # the /ui graph and fact listings unless asked for explicitly.
+        flt.must_not = [
+            qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary"))
+        ]
     points, _ = client.scroll(
         collection_name=config.MEMORIES_COLLECTION,
-        scroll_filter=qmodels.Filter(must=must),
+        scroll_filter=flt,
         limit=limit,
         with_payload=True,
         with_vectors=False,
@@ -394,12 +504,16 @@ def graph_data(
     ]
     if not include_superseded:
         must.append(qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")))
+    flt = qmodels.Filter(must=must, must_not=[
+        # summaries are per-session artifacts, not graph nodes
+        qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary")),
+    ])
     points = []
     offset = None
     while len(points) < limit:
         batch, offset = client.scroll(
             collection_name=config.MEMORIES_COLLECTION,
-            scroll_filter=qmodels.Filter(must=must),
+            scroll_filter=flt,
             limit=min(256, limit - len(points)),
             offset=offset,
             with_payload=True,
@@ -506,6 +620,18 @@ def recall(
         else []
     )
 
+    routing = route_query(query)
+    docs = (
+        documents.search_chunks(client, embed_model, query, project or None)
+        if routing["docs"]
+        else []
+    )
+
+    # A matched session with a distilled summary is shown AS the summary
+    # (coherent, token-cheap); raw 300-char snippets only remain for sessions
+    # never consolidated. Details stay reachable via search_history.
+    summaries = get_session_summaries(client, (h["session_id"] for h in history), user_id)
+
     # Tag entries with the agent that produced them ("long brain + N
     # adapters": the reader should know a hit came from another agent).
     def _agent(entry: dict) -> str:
@@ -518,12 +644,25 @@ def recall(
             f"- ({m['type']}, {_fmt_date(m['created_at'])}{_agent(m)}) {m['text']}"
             for m in mems
         ]
-    if history:
+    if summaries:
+        lines.append("[Session summaries (related past sessions)]")
+        lines += [
+            f"- ({sid}, {_fmt_date(s['created_at'])}{_agent(s)}) {s['text'][:500]}"
+            for sid, s in summaries.items()
+        ]
+    raw_history = [h for h in history if h["session_id"] not in summaries]
+    if raw_history:
         lines.append("[Related past conversations]")
         lines += [
             f"- ({h['session_id']}, {_fmt_date(h['timestamp'])}{_agent(h)}) "
             f"{h['role']}: {h['content'][:300]}"
-            for h in history
+            for h in raw_history
+        ]
+    if docs:
+        lines.append("[Project documents]")
+        lines += [
+            f"- ({d['source']}) {d['text'][:config.RECALL_DOC_SNIPPET_CHARS]}"
+            for d in docs
         ]
     if recent:
         lines.append("[Most recent turns in this session]")
@@ -533,6 +672,9 @@ def recall(
         "project": project or config.DEFAULT_PROJECT,
         "memories": mems,
         "related_history": history,
+        "session_summaries": summaries,
         "recent_turns": recent,
+        "documents": docs,
+        "routing": routing,
         "context_block": "\n".join(lines),
     }

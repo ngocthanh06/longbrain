@@ -112,3 +112,52 @@ def ingest_file(
         _hide_admin_metadata(document)
         index.insert(document)
     return point_count(qdrant_client)
+
+
+def search_chunks(
+    client: QdrantClient,
+    embed_model,
+    query: str,
+    project: str | None = None,
+    top_k: int = config.RECALL_TOP_K_DOCS,
+    min_score: float = config.RECALL_MIN_SCORE,
+) -> list[dict]:
+    """Lightweight L4 lookup for the recall router: nearest document chunks,
+    hard-filtered to the project (documents are project-scoped by design).
+    Reads the chunk text out of the serialized `_node_content` directly so
+    recall() doesn't need the LlamaIndex index object."""
+    import json as _json
+
+    vector = embed_model.get_text_embedding(query)
+    must = []
+    if project:
+        must.append(
+            qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project))
+        )
+    try:
+        hits = client.search(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            query_vector=vector,
+            query_filter=qmodels.Filter(must=must) if must else None,
+            limit=top_k,
+            score_threshold=min_score,
+            with_payload=["_node_content", "source", "project_id"],
+        )
+    except Exception:
+        return []  # collection missing/empty — recall stays best-effort
+    results = []
+    for h in hits:
+        raw = (h.payload or {}).get("_node_content")
+        if not raw:
+            continue
+        try:
+            text = _json.loads(raw).get("text", "")
+        except (ValueError, TypeError):
+            continue
+        results.append({
+            "source": (h.payload or {}).get("source") or "",
+            "project_id": (h.payload or {}).get("project_id") or "",
+            "text": text,
+            "score": h.score,
+        })
+    return results

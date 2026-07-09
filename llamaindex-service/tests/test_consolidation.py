@@ -1,7 +1,7 @@
 import pytest
 
 from app import config, consolidation
-from app.consolidation import _parse_facts, transcript_from_points
+from app.consolidation import _parse_extraction, transcript_from_points
 from tests.conftest import FakeLLM
 
 
@@ -11,39 +11,42 @@ class FakePoint:
 
 
 # ---------------------------------------------------------------------------
-# _parse_facts: parse failure (None) vs deliberate empty ([])
+# _parse_extraction: object format (facts + summary), legacy bare-array
+# accepted for backward compatibility, parse failure (None) vs deliberate
+# empty extraction
 # ---------------------------------------------------------------------------
-def test_parse_valid_array():
-    raw = '[{"text": "uses Qdrant", "type": "decision", "importance": 0.8}]'
-    assert _parse_facts(raw) == [
-        {"text": "uses Qdrant", "type": "decision", "importance": 0.8}
-    ]
+def test_parse_object_with_facts_and_summary():
+    raw = '{"facts": [{"text": "uses Qdrant", "type": "decision", "importance": 0.8}], "summary": "Chose Qdrant."}'
+    assert _parse_extraction(raw) == {
+        "facts": [{"text": "uses Qdrant", "type": "decision", "importance": 0.8}],
+        "summary": "Chose Qdrant.",
+    }
 
 
-def test_parse_array_with_surrounding_prose():
+def test_parse_object_with_surrounding_prose_and_fences():
+    raw = '```json\n{"facts": [{"text": "a"}], "summary": "s"}\n```'
+    assert _parse_extraction(raw) == {"facts": [{"text": "a"}], "summary": "s"}
+
+
+def test_parse_legacy_bare_array_still_accepted():
     raw = 'Here you go:\n[{"text": "a"}]\nHope that helps!'
-    assert _parse_facts(raw) == [{"text": "a"}]
+    assert _parse_extraction(raw) == {"facts": [{"text": "a"}], "summary": ""}
 
 
-def test_parse_code_fences():
-    raw = '```json\n[{"text": "a"}]\n```'
-    assert _parse_facts(raw) == [{"text": "a"}]
-
-
-def test_parse_empty_array_is_valid_not_failure():
-    assert _parse_facts("[]") == []
-    assert _parse_facts("Nothing durable here: []") == []
+def test_parse_empty_is_valid_not_failure():
+    assert _parse_extraction("[]") == {"facts": [], "summary": ""}
+    assert _parse_extraction('{"facts": [], "summary": ""}') == {"facts": [], "summary": ""}
 
 
 def test_parse_garbage_returns_none():
-    assert _parse_facts("I could not find any facts, sorry!") is None
-    assert _parse_facts("") is None
-    assert _parse_facts("[{broken json]") is None
+    assert _parse_extraction("I could not find any facts, sorry!") is None
+    assert _parse_extraction("") is None
+    assert _parse_extraction("[{broken json]") is None
 
 
 def test_parse_filters_non_dict_and_textless_entries():
-    raw = '[{"text": "keep"}, {"type": "fact"}, "loose string", 42]'
-    assert _parse_facts(raw) == [{"text": "keep"}]
+    raw = '{"facts": [{"text": "keep"}, {"type": "fact"}, "loose string", 42], "summary": null}'
+    assert _parse_extraction(raw) == {"facts": [{"text": "keep"}], "summary": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +60,13 @@ def test_extract_raises_on_unparseable_output():
 
 def test_extract_accepts_deliberate_empty():
     llm = FakeLLM("[]")
-    assert consolidation.extract_with_llm(llm, "user: hello") == []
+    assert consolidation.extract_with_llm(llm, "user: hello") == {"facts": [], "summary": ""}
+
+
+def test_extract_returns_summary():
+    llm = FakeLLM('{"facts": [], "summary": "Debugged the deploy pipeline."}')
+    result = consolidation.extract_with_llm(llm, "t")
+    assert result["summary"] == "Debugged the deploy pipeline."
 
 
 def test_extract_applies_importance_floor_and_cap():
@@ -66,10 +75,19 @@ def test_extract_applies_importance_floor_and_cap():
     ]  # importances 0.9 .. 0.2
     import json
 
-    llm = FakeLLM(json.dumps(facts))
-    result = consolidation.extract_with_llm(llm, "t")
+    llm = FakeLLM(json.dumps({"facts": facts, "summary": ""}))
+    result = consolidation.extract_with_llm(llm, "t")["facts"]
     assert all(f["importance"] >= config.CONSOLIDATION_MIN_IMPORTANCE for f in result)
     assert len(result) <= config.CONSOLIDATION_MAX_FACTS
+
+
+def test_extract_survives_unparseable_importance():
+    import json
+
+    facts = [{"text": "solid fact", "importance": "high"}]
+    llm = FakeLLM(json.dumps({"facts": facts, "summary": ""}))
+    result = consolidation.extract_with_llm(llm, "t")["facts"]
+    assert [f["text"] for f in result] == ["solid fact"]  # 0.5 fallback >= floor
 
 
 def test_extract_filters_meta_about_assistant():
@@ -79,8 +97,8 @@ def test_extract_filters_meta_about_assistant():
         {"text": "User set Sonnet as the default model for new sessions.", "importance": 0.8},
         {"text": "User's stack is Laravel and Go.", "importance": 0.8},
     ]
-    llm = FakeLLM(json.dumps(facts))
-    result = consolidation.extract_with_llm(llm, "t")
+    llm = FakeLLM(json.dumps({"facts": facts, "summary": ""}))
+    result = consolidation.extract_with_llm(llm, "t")["facts"]
     assert [f["text"] for f in result] == ["User's stack is Laravel and Go."]
 
 
@@ -93,6 +111,7 @@ def test_extract_wraps_transcript_in_delimiters():
 def test_instructions_mark_transcript_as_data():
     text = consolidation.EXTRACTION_INSTRUCTIONS.format(max_facts=5)
     assert "DATA to analyze" in text
+    assert "summary" in text.lower()
 
 
 # ---------------------------------------------------------------------------
