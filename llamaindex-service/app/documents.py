@@ -14,6 +14,24 @@ from qdrant_client.http import models as qmodels
 
 from app import config
 
+# Bookkeeping metadata must stay OUT of the text that gets embedded (and out
+# of what the LLM sees): every document shares near-identical values here
+# (`/data/documents/...` paths, `user_id: local`, ...), so letting LlamaIndex
+# prepend them to each chunk before embedding drowns the actual content and
+# makes retrieval ranking near-random — verbatim chunk text stopped matching
+# its own chunk. `source` (the original filename, often the document's title)
+# is deliberately NOT listed: it is real semantic signal for title queries.
+EXCLUDED_METADATA_KEYS = [
+    "user_id", "project_id", "stored_path", "document_id",
+    "file_path", "file_name", "file_type", "file_size",
+    "creation_date", "last_modified_date", "last_accessed_date",
+]
+
+
+def _hide_admin_metadata(document: Document) -> None:
+    document.excluded_embed_metadata_keys = list(EXCLUDED_METADATA_KEYS)
+    document.excluded_llm_metadata_keys = list(EXCLUDED_METADATA_KEYS)
+
 
 def point_count(qdrant_client: QdrantClient) -> int:
     info = qdrant_client.get_collection(config.DOCUMENTS_COLLECTION)
@@ -70,6 +88,7 @@ def ingest_text(
             **(metadata or {}),
         },
     )
+    _hide_admin_metadata(document)
     index.insert(document)
     return point_count(qdrant_client)
 
@@ -90,5 +109,6 @@ def ingest_file(
                 **(metadata or {}),
             }
         )
+        _hide_admin_metadata(document)
         index.insert(document)
     return point_count(qdrant_client)
