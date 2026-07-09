@@ -25,7 +25,6 @@ Exit code 0 = fully wired; 1 = something needs attention (printed).
 import datetime
 import json
 import os
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -301,53 +300,25 @@ def sync_llm_env() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. nightly backup launchd agent (macOS)
+# 5 + 5b. host background jobs (launchd) — shared with the no-Hermes path,
+# see configure_host_jobs.py; setup.sh also installs them directly so a
+# Claude-Code-only machine (no ~/.hermes) still gets the docs/ watcher.
 # ---------------------------------------------------------------------------
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from configure_host_jobs import (  # noqa: E402
+    install_backup_agent as _install_backup_job,
+    install_ingest_watcher_agent as _install_ingest_job,
+)
+
+
 def install_backup_agent() -> None:
-    print("==> automatic backup (launchd, 2:00 AM)")
-    if sys.platform != "darwin":
-        note("not macOS — set up a cron job for scripts/backup.sh yourself")
-        return
-    template = REPO / "scripts" / "com.hermes.memory-backup.plist.template"
-    target = Path.home() / "Library" / "LaunchAgents" / "com.hermes.memory-backup.plist"
-    rendered = template.read_text().replace("__REPO__", str(REPO))
-    if target.exists() and target.read_text() == rendered:
-        note("already installed")
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(rendered)
-    plistlib.loads(rendered.encode())  # validate
-    subprocess.run(["launchctl", "unload", str(target)], capture_output=True)
-    result = subprocess.run(["launchctl", "load", str(target)], capture_output=True, text=True)
-    if result.returncode == 0:
-        note(f"installed + loaded {target.name}")
-    else:
-        fail(f"launchctl load failed: {result.stderr.strip()}")
+    if not _install_backup_job():
+        fail("backup launchd job could not be installed")
 
 
-# ---------------------------------------------------------------------------
-# 5b. docs/ auto-ingest launchd agent (macOS) — L4 knowledge base
-# ---------------------------------------------------------------------------
 def install_ingest_watcher_agent() -> None:
-    print("==> docs/ auto-ingest (launchd, every 60s)")
-    if sys.platform != "darwin":
-        note("not macOS — set up a cron job for scripts/ingest_watcher.py yourself")
-        return
-    template = REPO / "scripts" / "com.hermes.memory-ingest.plist.template"
-    target = Path.home() / "Library" / "LaunchAgents" / "com.hermes.memory-ingest.plist"
-    rendered = template.read_text().replace("__REPO__", str(REPO)).replace("__PYTHON__", sys.executable)
-    if target.exists() and target.read_text() == rendered:
-        note("already installed")
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(rendered)
-    plistlib.loads(rendered.encode())  # validate
-    subprocess.run(["launchctl", "unload", str(target)], capture_output=True)
-    result = subprocess.run(["launchctl", "load", str(target)], capture_output=True, text=True)
-    if result.returncode == 0:
-        note(f"installed + loaded {target.name} (watches each project's docs/ subfolder)")
-    else:
-        fail(f"launchctl load failed: {result.stderr.strip()}")
+    if not _install_ingest_job():
+        fail("docs/ ingest launchd job could not be installed")
 
 
 # ---------------------------------------------------------------------------

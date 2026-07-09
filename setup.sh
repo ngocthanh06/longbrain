@@ -15,8 +15,17 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is not installed. Install Docker Desktop first: https://docs.docker.com/get-docker/"
   exit 1
 fi
-if ! docker info >/dev/null 2>&1; then
-  echo "Docker daemon is not running. Open Docker Desktop, then run ./setup.sh again"
+# `docker info` can hang for minutes when the daemon is half-up — bound it so
+# setup fails fast with a clear message instead of appearing frozen.
+run_with_timeout() { # <seconds> <cmd...>
+  "${@:2}" & local cmd_pid=$!
+  ( sleep "$1"; kill -9 "$cmd_pid" 2>/dev/null ) & local watcher_pid=$!
+  local rc=0; wait "$cmd_pid" 2>/dev/null || rc=$?
+  kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null || true
+  return "$rc"
+}
+if ! run_with_timeout 15 docker info >/dev/null 2>&1; then
+  echo "Docker daemon is not running (or not responding). Open Docker Desktop, then run ./setup.sh again"
   exit 1
 fi
 echo "OK"
@@ -48,9 +57,33 @@ for i in $(seq 1 60); do
   sleep 5
 done
 
-# 5. Wire Hermes Desktop automatically (config + hook consent + serve patch + restart)
+# 4b. Upgrade check: chunks embedded before the metadata fix rank terribly —
+# offer a one-time re-embed when any are found (fresh installs: instant no-op).
+step "Checking knowledge-base vectors"
+if ! python3 scripts/reembed_documents.py --check; then
+  if [ -t 0 ]; then
+    echo "The document knowledge base needs a one-time re-embed (a backup is"
+    echo "written to ~/.hermes/ first; originals are preserved)."
+    read -r -p "Re-embed now? [y/N] " reembed_consent
+    case "$reembed_consent" in
+      [yY]*) python3 scripts/reembed_documents.py ;;
+      *) echo "Skipped — run later: python3 scripts/reembed_documents.py" ;;
+    esac
+  else
+    echo "Non-interactive shell — run later: python3 scripts/reembed_documents.py"
+  fi
+fi
+
 HERMES_PY="$HOME/.hermes/hermes-agent/venv/bin/python"
 [ -x "$HERMES_PY" ] || HERMES_PY="python3"
+
+# 4c. Host background jobs (docs/ auto-ingest + nightly backup) — agent-
+# independent, so install them here, NOT only inside the Hermes wiring:
+# a Claude-Code-only machine needs the docs/ watcher just as much.
+step "Installing background jobs (docs/ auto-ingest + nightly backup)"
+"$HERMES_PY" scripts/configure_host_jobs.py || true
+
+# 5. Wire Hermes Desktop automatically (config + hook consent + serve patch + restart)
 if [ -d "$HOME/.hermes" ]; then
   step "Configuring Hermes Desktop automatically"
   chmod +x hooks/post_llm_call.py 2>/dev/null || true
@@ -91,10 +124,12 @@ if command -v claude >/dev/null 2>&1; then
   HERMES_CONFIGURE_CLAUDE_MD=0
   if [ -t 0 ]; then
     echo "Optional: add a block to ~/.claude/CLAUDE.md (applies to EVERY project)"
-    echo "so that when Claude Code decides on its own to save long-term memory, it"
-    echo "prefers the hermes-memory MCP (localhost:8800) over its own built-in"
-    echo "file-based memory, falling back to built-in only when the"
-    echo "mcp__hermes-memory__* tools aren't available in the session."
+    echo "teaching Claude Code to actually USE this memory stack, both directions:"
+    echo "  - read:  search shared memory (past conversations of ALL agents, and"
+    echo "           project docs in the knowledge base) BEFORE declaring old"
+    echo "           context lost or a document unknown"
+    echo "  - write: prefer the hermes-memory MCP (localhost:8800) over Claude's"
+    echo "           built-in file-based memory when saving long-term facts"
     read -r -p "Add this instruction? [y/N] " claude_md_consent
     case "$claude_md_consent" in
       [yY]*) HERMES_CONFIGURE_CLAUDE_MD=1 ;;

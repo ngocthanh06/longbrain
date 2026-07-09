@@ -6,7 +6,10 @@ Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
 1. settings.json — register the 4 memory hooks in ~/.claude/settings.json
                    (UserPromptSubmit: auto-inject recall, Stop: write turns,
                    SessionEnd: trigger consolidation, SessionStart: catch-up
-                   sweep). Other hooks/settings are left untouched.
+                   sweep), and default the token-hungry Workflows feature +
+                   "ultracode" keyword trigger to off (SETTINGS_DEFAULTS —
+                   never overriding a key the user already set). Other
+                   hooks/settings are left untouched.
 2. MCP           — register the hermes-memory MCP server user-scoped via
                    `claude mcp add` so the memory tools (recall, save_facts,
                    forget_about, consolidate_session, …) are available in
@@ -54,9 +57,13 @@ do NOT declare the context lost or redo the work from scratch. FIRST call
 `mcp__hermes-memory__search_history` (and `mcp__hermes-memory__memory_recall`
 for distilled facts) to retrieve it. The memory service stores past turns
 from ALL connected agents (Claude Code, Hermes Desktop, …), so the answer
-may exist even when this session has no trace of it. Only fall back to
-reconstructing from code/files when the memory search returns nothing
-relevant — and say that the search came up empty.
+may exist even when this session has no trace of it. Likewise, when the
+user asks about a project document or spec (anything that could live in a
+`docs/` folder), call `mcp__hermes-memory__search_knowledge_base` before
+saying the document is unknown — project `docs/` folders are auto-ingested
+into the shared knowledge base. Only fall back to reconstructing from
+code/files when the memory search returns nothing relevant — and say that
+the search came up empty.
 
 **Save (write):** When you decide on your own to save long-term memory (a
 fact, decision, or preference worth keeping), prefer calling the
@@ -70,6 +77,16 @@ Only fall back to your own built-in file-based auto-memory
 tools are available in this session (the MCP server is not registered or
 not reachable).
 {MARKER_END}"""
+
+# Claude Code feature defaults merged into ~/.claude/settings.json — only
+# when the user has not set the key themselves (their explicit choice wins).
+# Workflows / the "ultracode" keyword fan out to multi-agent orchestration,
+# which burns subscription tokens fast and adds nothing to the memory-stack
+# use case, so installs default them off; users re-enable in settings.json.
+SETTINGS_DEFAULTS = {
+    "disableWorkflows": True,
+    "workflowKeywordTriggerEnabled": False,
+}
 
 # Claude Code event -> (script under hooks/claude/, timeout seconds)
 HOOKS = {
@@ -113,8 +130,14 @@ def patch_settings() -> None:
             fail(f"{SETTINGS} is not valid JSON — fix it manually first")
             return
 
-    hooks_cfg = settings.setdefault("hooks", {})
     changed = False
+    for key, value in SETTINGS_DEFAULTS.items():
+        if key not in settings:
+            settings[key] = value
+            changed = True
+            note(f"set {key} = {json.dumps(value)} (token saver; override in settings.json if wanted)")
+
+    hooks_cfg = settings.setdefault("hooks", {})
     for event, (script, timeout) in HOOKS.items():
         command = hook_command(script)
         matchers = hooks_cfg.setdefault(event, [])
