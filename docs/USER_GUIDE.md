@@ -65,10 +65,10 @@ project. Creating a new project just works — zero configuration.
 
 ### Running multiple agents in parallel
 
-Nothing to switch: every installed agent's hooks stay registered and write
-to the same service. What you teach one agent, the others recall. Every
-record carries `source_agent` (`hermes` / `claude-code`) — visible in the
-`/ui` detail panel.
+Nothing to switch: every installed agent's hooks/notify sync stay registered
+and write to the same service. What you teach one agent, the others recall.
+Every record carries `source_agent` (`hermes` / `claude-code` / `codex`) —
+visible in the `/ui` detail panel.
 
 ## Memory browser (`/ui`)
 

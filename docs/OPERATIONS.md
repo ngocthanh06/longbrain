@@ -19,6 +19,10 @@ installed agent (each skipped gracefully when absent):
   **Needs no API key**: Claude Code runs on your Claude login, and
   consolidation uses the service-side LLM or the `consolidate_session` MCP
   tool. Restart open sessions to pick the hooks up.
+- **Codex** (`scripts/configure_codex.py`): registers the `longbrain` MCP
+  server and wraps Codex's top-level `notify` command so completed rollout
+  turns are synced into Longbrain after each turn. Recall remains tools-only
+  because Codex does not expose a pre-prompt injection hook.
 
 It also installs two launchd agents: the nightly backup and the `docs/`
 ingest watcher.

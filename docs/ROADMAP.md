@@ -14,7 +14,7 @@ preserved in git history (`UPGRADE_PLAN.md`, removed 2026-07-10).
 | 2026-07-09 | **Recall eval harness** (`scripts/recall_eval.py` + baseline) — recall quality is now measured, not guessed; rule-based memory router (docs channel on trigger words); session summaries in consolidation; adapter SDK docs + minimal example. |
 | 2026-07-10 | **Phase C — recall quality, closed**: C1 embedding swap **rejected by measurement** (two blind LLM-judged benchmarks vs `multilingual-e5-large` below the 1.3× decision bar; MiniLM stays). C2 **hybrid BM25 shipped**: sparse exact-token rescue channel on all three collections, gated to identifier-like queries; exact-token hit@top-2 went 1/12 → 11/12 with byte-identical results for prompts without such tokens. Kill switch `HYBRID_BM25=false`. |
 | 2026-07-10 | **Identity cleanup**: hermes → longbrain rename across MCP server, containers, image, env (legacy `HERMES_*` aliases kept), Qdrant collections (migrated 1144/1144 points); `/ui` named-vector fix; preference boost in recall (`RECALL_PREFERENCE_BOOST`, trap-tested in the eval set). |
-| 2026-07-10 | **Agent support tiers + doctor**: formal tier model (full adapter / MCP-only / generic MCP) documented in `adapters/README.md`; Codex wired at MCP-only tier (`scripts/configure_codex.py`, detected by setup.sh); `scripts/doctor.py` — one-shot read-only wiring + health check across service, launchd jobs and all agents, with `--fix` re-running setup. |
+| 2026-07-10 | **Agent support tiers + doctor**: formal tier model (full adapter / write adapter / MCP-only / generic MCP) documented in `adapters/README.md`; Codex wired with MCP + turn-ended notify recording (`scripts/configure_codex.py`, `hooks/codex/turn_ended.py`, detected by setup.sh); `scripts/doctor.py` — one-shot read-only wiring + health check across service, launchd jobs and all agents, with `--fix` re-running setup. |
 
 ## Next (in order)
 
@@ -31,9 +31,10 @@ preserved in git history (`UPGRADE_PLAN.md`, removed 2026-07-10).
 
 ## Further out
 
-- **Codex full adapter** — Codex is wired at MCP-only tier today (no
-  lifecycle hooks exist to attach to); upgrade to full adapter if/when
-  Codex ships hooks. A Cursor adapter would prove the contract on another
+- **Codex full adapter** — Codex can record completed turns via `notify`
+  today, but recall is still tools-only because there is no pre-prompt
+  injection hook. Upgrade to full adapter if/when Codex exposes the missing
+  lifecycle moments. A Cursor adapter would prove the contract on another
   agent nobody tuned for.
 - **"New machine in 10 minutes"** — a packaged restore experience around the
   transfer bundle: install, import, keep working.

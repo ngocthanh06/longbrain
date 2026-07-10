@@ -9,7 +9,8 @@ Answers "is my memory actually working?" without running the installer:
 
 Checks: the memory service (/health, last_written_at), the launchd
 background jobs (nightly backup, docs/ ingest watcher), and every detected
-agent's wiring (Claude Code hooks + MCP, Hermes Desktop hooks, Codex MCP).
+agent's wiring (Claude Code hooks + MCP, Hermes Desktop hooks, Codex notify
+sync + MCP).
 Agents that aren't installed are skipped, not failed.
 """
 
@@ -150,7 +151,7 @@ def check_hermes() -> None:
 
 
 def check_codex() -> None:
-    print("==> Codex (MCP-only)")
+    print("==> Codex (notify write + MCP)")
     if not configure_codex.detected():
         skip("not installed")
         return
@@ -158,9 +159,39 @@ def check_codex() -> None:
     text = config.read_text() if config.exists() else ""
     if configure_codex.SECTION in text and configure_codex.MCP_URL in text:
         ok(f"MCP longbrain registered in {config}")
-        skip("MCP-only tier: turns are not recorded automatically (adapters/README.md)")
     else:
         bad(f"MCP longbrain missing from {config} — re-run ./setup.sh")
+    if str(configure_codex.HOOK_SCRIPT) in text and "notify" in text:
+        ok("turn-ended notify hook registered (records completed turns)")
+        skip("no pre-prompt hook: Codex recall is tools-only")
+        state_path = configure_codex.CODEX_HOME / "longbrain_codex_notify_state.json"
+        try:
+            state = json.loads(state_path.read_text())
+        except FileNotFoundError:
+            skip("notify has not run yet (finish one Codex turn, then re-check)")
+        except (OSError, json.JSONDecodeError):
+            bad(f"Codex notify state is unreadable: {state_path}")
+        else:
+            scanned = int(state.get("last_scan_rollouts") or 0)
+            extracted = int(state.get("last_scan_extracted") or 0)
+            recorded = len(state.get("processed") or [])
+            has_scan_stats = bool(state.get("last_scan_at"))
+            if has_scan_stats and scanned and not extracted:
+                bad("Codex rollout scan extracted 0 turns — rollout format may have changed")
+            elif has_scan_stats and recorded:
+                ok(
+                    f"Codex adapter has recorded {recorded} completed turn(s); "
+                    f"parser found {extracted} on last scan"
+                )
+            elif has_scan_stats and extracted:
+                bad("Codex rollout parser works, but no turn has been recorded successfully")
+            elif recorded:
+                ok(f"Codex adapter has recorded {recorded} completed turn(s)")
+                skip("parser health stats will appear after the next Codex turn")
+            else:
+                skip("Codex has no rollout files to verify yet")
+    else:
+        bad(f"Codex notify hook missing from {config} — re-run ./setup.sh")
 
 
 def main() -> int:

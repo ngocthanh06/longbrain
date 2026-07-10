@@ -162,7 +162,7 @@ for the hybrid exact-token channel (§3c); the dense vector stays unnamed.
   "content": "…",
   "timestamp": 1783229012.9, // payload index (float)
   "consolidated": false,     // payload index — distilled yet or not
-  "source_agent": "hermes"   // optional — "hermes" | "claude-code"; absent on
+  "source_agent": "hermes"   // optional — "hermes" | "claude-code" | "codex"; absent on
                               // records written before provenance was added
 }
 ```
@@ -250,7 +250,7 @@ between two image builds can silently diverge.
 `search_knowledge_base` · `add_to_knowledge_base` — all search/write tools
 accept an optional `project` param.
 
-## 7. Agent integration — two adapters on a shared core
+## 7. Agent integration — adapters on a shared core
 
 The memory engine has no agent-specific code. Each agent gets a thin adapter:
 a handful of lifecycle hooks that call the same REST/MCP surface above. This
@@ -303,9 +303,28 @@ CLI isn't found):
 subscription login; consolidation uses the service-side LLM or the
 `consolidate_session` MCP tool (the agent's own model distills).
 
+### 7c. Codex
+
+`setup.sh` -> `scripts/configure_codex.py` (idempotent, skipped if Codex is
+not installed):
+
+1. **MCP registration**: `[mcp_servers.longbrain]` in
+   `~/.codex/config.toml`, pointing at `http://localhost:8800/mcp`.
+2. **Turn-ended recording**: wraps Codex's top-level `notify` command with
+   `hooks/codex/turn_ended.py`. The hook scans recent rollout JSONL files
+   under `~/.codex/sessions`, extracts real user prompts plus final assistant
+   answers, and posts each completed turn to `/memory/append` with
+   `source_agent="codex"`. Any previous notify command is chained, so existing
+   Codex desktop notifications keep working.
+
+This is a **write adapter**, not a full lifecycle adapter: Codex chats are
+recorded automatically, and the model can call MCP tools, but there is still
+no pre-prompt hook for automatic recall injection or session-end hook for
+automatic consolidation.
+
 ## 8. Multi-agent operation & provenance
 
-**Why two adapters instead of "the Hermes stack":** Hermes Desktop only
+**Why adapters instead of "the Hermes stack":** Hermes Desktop only
 accepts an API key, not a Claude subscription login — a real barrier for
 users who pay for Claude Pro/Max but have no API key. Claude Code (and
 similarly Codex-style CLIs) log in with the subscription directly. The
@@ -314,8 +333,8 @@ additive: a second adapter, not a rewrite. The repo's framing shifted from
 "memory stack for Hermes" to "long brain + N adapters."
 
 **Running Hermes and Claude Code in parallel** works with no explicit
-"switch" — both adapters' hooks are registered independently and write to
-the same service:
+"switch" — each adapter's hooks/notify command are registered independently
+and write to the same service:
 - **Project-slug coherence.** The Claude Code resolver tries Hermes'
   `projects.db` first (matching the session's `cwd` against folder-anchored
   projects) so a shared workspace gets the *same* slug from both agents;
@@ -323,7 +342,7 @@ the same service:
   `"default"`. This means a project touched from both agents stays one
   cluster, not two.
 - **Provenance, not partitioning.** Every write carries `source_agent`
-  (`"hermes"` | `"claude-code"`), visible in `/ui`'s detail panel and
+  (`"hermes"` | `"claude-code"` | `"codex"`), visible in `/ui`'s detail panel and
   preserved through consolidation (a distilled fact inherits its source
   session's `source_agent`) and through export/import bundles. It's pure
   metadata — recall, dedup/supersede and project partitioning all ignore it,
@@ -374,7 +393,7 @@ longbrain/
 ├── scripts/
 │   ├── configure_hermes.py      # auto-patch config.yaml + consent + serve bug + app restart
 │   ├── configure_claude.py      # auto-wire Claude Code (settings.json hooks + MCP registration)
-│   ├── configure_codex.py       # auto-wire Codex at MCP-only tier (config.toml MCP entry)
+│   ├── configure_codex.py       # auto-wire Codex (MCP + turn-ended notify recording)
 │   ├── doctor.py                # read-only wiring + health check across all agents (--fix)
 │   ├── backup.sh                # Qdrant snapshots (nightly via launchd)
 │   ├── ingest_watcher.py        # auto-ingest each project's docs/ folder (60s poll via launchd)

@@ -145,9 +145,9 @@ else
   echo "Skipping Claude Code wiring — install it and re-run ./setup.sh."
 fi
 
-# 5c. Wire Codex, if installed (MCP-only tier: memory tools, no lifecycle hooks)
+# 5c. Wire Codex, if installed (MCP tools + turn-ended recording via notify)
 if command -v codex >/dev/null 2>&1 || [ -d "$HOME/.codex" ]; then
-  step "Configuring Codex (MCP-only)"
+  step "Configuring Codex (MCP + turn-ended memory sync)"
   python3 scripts/configure_codex.py
 else
   step "Codex not found — skipping (any MCP client can connect manually: http://localhost:8800/mcp)"

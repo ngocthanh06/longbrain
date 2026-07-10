@@ -12,6 +12,7 @@ Two reference implementations ship in this repo:
 - `hooks/claude/` — Claude Code (4 lifecycle hooks, stdlib-only python)
 - `hooks/` — Hermes Desktop (`pre_llm_call.py`, `post_llm_call.py`,
   `on_session_end.py`, `on_session_start.py`)
+- `hooks/codex/` — Codex turn-ended notify sync (write-only lifecycle)
 
 `python_minimal/adapter.py` in this folder is a single-file skeleton to
 copy from.
@@ -25,6 +26,9 @@ lifecycle an agent's adapter can automate:
 - **Full adapter** — all 4 lifecycle moments are automatic: recall before
   every prompt, append after every response, consolidate on session end,
   catch-up on session start.
+- **Write adapter** — completed turns are recorded automatically, and MCP
+  tools are available, but recall/consolidation still require model/tool
+  initiative because the agent has no pre-prompt/session lifecycle hook.
 - **MCP-only** — the model can call the memory tools on its own initiative
   (`memory_recall`, `save_memories`, `search_history`, …) but the agent has
   no hooks, so turns are **not** recorded automatically.
@@ -35,7 +39,7 @@ lifecycle an agent's adapter can automate:
 |---|---|---|---|---|
 | Claude Code | ✅ | ✅ | ✅ | `./setup.sh` |
 | Hermes Desktop | ✅ | ✅ | ✅ | `./setup.sh` |
-| Codex | tools only | ❌ | ❌ | `./setup.sh` (MCP-only) |
+| Codex | tools only | ✅ via `notify` | ❌ | `./setup.sh` (write adapter) |
 | Any MCP client | tools only | ❌ | ❌ | point it at `http://localhost:8800/mcp` |
 
 `./setup.sh` detects installed agents and wires each at the highest tier it

@@ -11,8 +11,9 @@ install** — the host-side scripts and hooks run on the stock system
 
 Two full adapters ship today: **Hermes Desktop** and **Claude Code**. Both
 access the same memory store, so what you teach one agent, the other
-recalls. **Codex** is wired at MCP-only tier (memory tools without
-automatic recording), and any MCP client can connect manually — see the
+recalls. **Codex** ships as a partial adapter: MCP tools plus automatic
+turn-ended recording through Codex's `notify` command (recall remains
+tools-only). Any MCP client can connect manually — see the
 [support tiers](adapters/README.md#support-tiers). Adding a new agent only
 means writing a new adapter — the system's architecture doesn't change.
 
@@ -47,10 +48,12 @@ flowchart TB
     subgraph Agents["User's machine — chat agents"]
         HD["Hermes Desktop<br/>hooks/*.py"]
         CC["Claude Code<br/>hooks/claude/*.py"]
+        CX["Codex<br/>notify → hooks/codex/turn_ended.py"]
     end
 
     HD -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
     CC -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
+    CX -- "POST /memory/append<br/>MCP /mcp" --> SVC
 
     subgraph SVC["llamaindex-service — FastAPI (host :8800 → container :8000)"]
         REST["REST API"]
