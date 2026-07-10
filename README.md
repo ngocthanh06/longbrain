@@ -5,7 +5,9 @@ doesn't depend on any specific agent, so multiple agents can share the
 same memory. Each user runs their own independent stack — data is always
 stored locally and stays fully private.
 
-By default it needs **no API key, no Ollama, and no Python on the host**.
+By default it needs **no API key, no Ollama, and no Python packages to
+install** — the host-side scripts and hooks run on the stock system
+`python3`, stdlib only.
 
 Two full adapters ship today: **Hermes Desktop** and **Claude Code**. Both
 access the same memory store, so what you teach one agent, the other

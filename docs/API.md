@@ -127,14 +127,21 @@ curl -X POST localhost:8800/memory/recall -H 'Content-Type: application/json' \
 
 ```json
 {
+  "project": "erp",
   "context_block": "[Long-term memories]\n- (fact, 2026-07-10) ...",
   "memories": [...],
-  "history": [...],
-  "recent": [...],
-  "routing": {"docs_channel": false},
+  "related_history": [...],
+  "session_summaries": [...],
+  "recent_turns": [...],
+  "documents": [],
+  "routing": {"docs": false, "history_hint": false},
   "last_written_at": 1752130000.0
 }
 ```
+
+`routing` reports the rule-based router's decision: `docs` — whether the
+document channel fired (trigger words like "spec", "tài liệu");
+`history_hint` — observability only.
 
 Optional tuning fields: `top_k_memories`, `top_k_history`, `recent_turns`.
 

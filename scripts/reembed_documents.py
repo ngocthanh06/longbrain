@@ -28,6 +28,7 @@ unreachable), exit 2 when a re-embed is needed.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -36,7 +37,7 @@ from pathlib import Path
 
 MEMORY_URL = "http://localhost:8800"
 QDRANT_URL = "http://localhost:6333"
-COLLECTION = "hermes_documents"
+COLLECTION = os.getenv("DOCUMENTS_COLLECTION", "longbrain_documents")
 BACKUP = Path.home() / ".hermes" / f"{COLLECTION}_reembed_backup_{time.strftime('%Y%m%d_%H%M%S')}.json"
 REPO = Path(__file__).resolve().parent.parent
 
