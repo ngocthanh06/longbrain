@@ -564,7 +564,7 @@ def memory_export():
     return JSONResponse(
         bundle,
         headers={
-            "Content-Disposition": f'attachment; filename="hermes-memory-{stamp}.json"'
+            "Content-Disposition": f'attachment; filename="longbrain-memory-{stamp}.json"'
         },
     )
 

@@ -40,17 +40,17 @@ flowchart TB
         MCP --> ENGINE
     end
 
-    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>hermes_chat_history · hermes_memories<br/>hermes_documents · hermes_meta")]
+    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>longbrain_chat_history · longbrain_memories<br/>longbrain_documents · longbrain_meta")]
     QD -.-> VOL[("volume: qdrant_data")]
-    ENGINE -.-> DVOL[("volume: hermes_data<br/>/data — original document files")]
+    ENGINE -.-> DVOL[("volume: longbrain_data<br/>/data — original document files")]
 
     OLLAMA["ollama (optional profile)"] -. "--profile ollama" .-> SVC
 ```
 
 - **L1 Working memory** — `ChatMemoryBuffer` rebuilt per session
-- **L2 Episodic memory** — `hermes_chat_history` (every turn, searchable semantically and per session)
-- **L3 Semantic memory** — `hermes_memories` (facts/preferences/decisions/tasks distilled by consolidation, with dedup/supersede)
-- **L4 Knowledge base** — `hermes_documents` (document RAG)
+- **L2 Episodic memory** — `longbrain_chat_history` (every turn, searchable semantically and per session)
+- **L3 Semantic memory** — `longbrain_memories` (facts/preferences/decisions/tasks distilled by consolidation, with dedup/supersede)
+- **L4 Knowledge base** — `longbrain_documents` (document RAG)
 - **Embedding**: fastembed (local ONNX, baked into the image)
 - **LLM (for consolidation)**: `none | anthropic | openai | nvidia | gemini | ollama`
 
@@ -67,8 +67,8 @@ Before every chat turn, a hook calls `POST /memory/recall`, which merges
 three sources into one context block that gets injected into the prompt
 (full sequence diagram: [ARCHITECTURE.md §3c](ARCHITECTURE.md#3-data-flows)):
 
-- **L3** — distilled facts relevant to what you just asked (semantic search over `hermes_memories`)
-- **L2** — related past conversations from *other* sessions (semantic search over `hermes_chat_history`)
+- **L3** — distilled facts relevant to what you just asked (semantic search over `longbrain_memories`)
+- **L2** — related past conversations from *other* sessions (semantic search over `longbrain_chat_history`)
 - **L1** — the current session's own recent turns
 
 Search is **hybrid**: dense semantic cosine plus a BM25 keyword channel
@@ -87,7 +87,7 @@ Two things keep this cheap instead of turning into another growing
    empty, the context block is an empty string and the hook prints
    nothing — zero extra tokens for that turn.
 2. **What does get injected is capped**, regardless of how much memory has
-   accumulated: `HERMES_MEMORY_MAX_CONTEXT` (default `6000` characters,
+   accumulated: `LONGBRAIN_MEMORY_MAX_CONTEXT` (default `6000` characters,
    ≈1500-2000 tokens) truncates the Claude Code hook's injection. A
    `CLAUDE.md` you hand-maintain gets loaded **in full, every turn**, and
    grows as you add to it — cost per turn climbs over time. Here, cost per
@@ -96,7 +96,7 @@ Two things keep this cheap instead of turning into another growing
 
 Tune both via `.env` if you want to trade recall breadth for a smaller
 footprint (raise `RECALL_MIN_SCORE`) or shrink the injection further
-(lower `HERMES_MEMORY_MAX_CONTEXT`).
+(lower `LONGBRAIN_MEMORY_MAX_CONTEXT`).
 
 ## Why use this instead of the alternatives?
 
@@ -170,7 +170,7 @@ builds & starts containers → waits for health → wires every installed agent
   "remember/forget" commands go to this stack, not Hermes' small built-in
   store) → restarts Hermes Desktop.
 - **Claude Code**: registers the 4 hooks in `~/.claude/settings.json` and
-  the `hermes-memory` MCP server (user scope) via `scripts/configure_claude.py`.
+  the `longbrain` MCP server (user scope) via `scripts/configure_claude.py`.
   **Needs no API key anywhere**: Claude Code runs on your Claude login, and
   consolidation uses the service-side LLM or the `consolidate_session` MCP
   tool. Restart open sessions to pick the hooks up.
@@ -190,7 +190,7 @@ sidebar), then falls back to the git-root folder name. Every record carries
 `source_agent` (`hermes` / `claude-code`) — visible in the `/ui` detail
 panel. Note: this stack complements Claude Code's own CLAUDE.md/auto-memory
 (static per-repo instructions) with semantic, cross-session, cross-project
-recall; memory injection is bounded (`HERMES_MEMORY_MAX_CONTEXT`, default
+recall; memory injection is bounded (`LONGBRAIN_MEMORY_MAX_CONTEXT`, default
 6000 chars) since it spends your subscription tokens each turn.
 
 ## Memory browser (`http://localhost:8800/ui`)
@@ -245,7 +245,10 @@ container, no external assets, light/dark themed:
 | `LLM_PROVIDER` | `none`* | `none` \| `anthropic` \| `openai` \| `nvidia` \| `gemini` \| `ollama` |
 | `LLM_MODEL` | per provider | e.g. `models/gemini-2.5-flash`, `claude-sonnet-5` |
 | `*_API_KEY` | — | `ANTHROPIC` / `OPENAI` / `NVIDIA` / `GOOGLE` — setup.sh borrows an existing key from `~/.hermes/.env` when the provider is `none` |
-| `HERMES_USER_ID` | `local` | Stamped into every payload (future multi-user server = no migration) |
+| `LONGBRAIN_USER_ID` | `local` | Stamped into every payload (future multi-user server = no migration) |
+
+> Every `LONGBRAIN_*` variable also accepts its pre-rename `HERMES_*` name
+> as a legacy alias, so an existing install keeps working untouched.
 
 - **The LLM is freely swappable** — it is only used for consolidation and
   `/chat`. With `none`, Hermes' own model handles consolidation through the
@@ -355,7 +358,7 @@ boot/login via `RunAtLoad` in case the machine was powered off; 7 newest kept;
 log at `logs/backup.log`) — installed by setup.sh. Manual run:
 
 ```bash
-./scripts/backup.sh    # snapshots every hermes_* collection into ./backups/
+./scripts/backup.sh    # snapshots every longbrain_* collection into ./backups/
 ```
 
 ## Auto-ingest documents (docs/ watcher)
@@ -365,7 +368,7 @@ drop files into a **`docs/` subfolder inside a project's own folder** —
 `scripts/ingest_watcher.py` picks them up automatically:
 
 - Installed by `setup.sh`/`configure_hermes.py` as a launchd agent, one poll
-  pass every 60s (`com.hermes.memory-ingest.plist.template`; not a long-lived
+  pass every 60s (`com.longbrain.memory-ingest.plist.template`; not a long-lived
   daemon, no `watchdog`/inotify dependency — "poll" means comparing
   (mtime, size) against the last run).
 - **Works with or without Hermes Desktop.** Project folders come from two
@@ -407,7 +410,7 @@ skips records that already exist — running it twice is safe.
 ## Repository layout
 
 ```
-hermes-agent/
+longbrain/
 ├── setup.sh                 # one-command install (Docker + automatic Hermes wiring)
 ├── docker-compose.yml       # qdrant + llamaindex (+ optional ollama profile)
 ├── .env.example

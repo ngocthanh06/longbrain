@@ -44,7 +44,7 @@ POST /memory/recall
 - `recent_turns: 0` always — your agent already carries its own live
   conversation; re-injecting it doubles token cost for nothing.
 - Inject `context_block` from the response, prefixed with something like
-  `"Long-term memory (auto-recalled):"`. Cap it (`HERMES_MEMORY_MAX_CONTEXT`,
+  `"Long-term memory (auto-recalled):"`. Cap it (`LONGBRAIN_MEMORY_MAX_CONTEXT`,
   default 6000 chars) and skip the call entirely for prompts shorter than
   ~15 chars ("ok", "continue") — they carry nothing to search for.
 - The service routes channels by itself (facts + related history always;
@@ -122,9 +122,9 @@ and save on its own initiative:
 - never inject the session's own recent turns back into it
 - skip recall for sub-15-char prompts
 - cap every injected block
-- log nothing by default (`HERMES_DEBUG_HOOKS=1` to opt in, truncated) —
+- log nothing by default (`LONGBRAIN_DEBUG_HOOKS=1` to opt in, truncated) —
   hook payloads contain full prompts
 
 All of these are env-tunable; keep the same env names
-(`HERMES_MEMORY_MAX_CONTEXT`, `HERMES_RECALL_MIN_PROMPT_CHARS`,
-`HERMES_MEMORY_URL`, ...) so one configuration governs every adapter.
+(`LONGBRAIN_MEMORY_MAX_CONTEXT`, `LONGBRAIN_RECALL_MIN_PROMPT_CHARS`,
+`LONGBRAIN_MEMORY_URL`, ...) so one configuration governs every adapter.

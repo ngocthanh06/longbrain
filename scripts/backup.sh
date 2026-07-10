@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Snapshot every hermes_* Qdrant collection into ./backups/<timestamp>/,
+# Snapshot every longbrain_*/hermes_* Qdrant collection into
+# ./backups/<timestamp>/ (the hermes_ prefix covers not-yet-migrated installs),
 # keep the newest $BACKUP_KEEP backups, log to logs/backup.log.
-# Run manually or via the com.hermes.memory-backup launchd agent (2:00 AM).
+# Run manually or via the com.longbrain.memory-backup launchd agent (2:00 AM).
 set -euo pipefail
 
 QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
@@ -21,7 +22,7 @@ if ! curl -fsS "$QDRANT_URL/collections" >/dev/null 2>&1; then
 fi
 
 collections=$(curl -fsS "$QDRANT_URL/collections" | python3 -c \
-  "import json,sys; print('\n'.join(c['name'] for c in json.load(sys.stdin)['result']['collections'] if c['name'].startswith('hermes_')))")
+  "import json,sys; print('\n'.join(c['name'] for c in json.load(sys.stdin)['result']['collections'] if c['name'].startswith(('longbrain_', 'hermes_'))))")
 
 for col in $collections; do
   name=$(curl -fsS -X POST "$QDRANT_URL/collections/$col/snapshots" | python3 -c \

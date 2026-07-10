@@ -45,14 +45,14 @@ LLM_REQUEST_TIMEOUT = float(os.getenv("LLM_REQUEST_TIMEOUT", "180"))
 # ---------------------------------------------------------------------------
 # Qdrant collections
 # ---------------------------------------------------------------------------
-DOCUMENTS_COLLECTION = os.getenv("DOCUMENTS_COLLECTION", "hermes_documents")
-CHAT_HISTORY_COLLECTION = os.getenv("CHAT_HISTORY_COLLECTION", "hermes_chat_history")
-MEMORIES_COLLECTION = os.getenv("MEMORIES_COLLECTION", "hermes_memories")
-META_COLLECTION = os.getenv("META_COLLECTION", "hermes_meta")
+DOCUMENTS_COLLECTION = os.getenv("DOCUMENTS_COLLECTION", "longbrain_documents")
+CHAT_HISTORY_COLLECTION = os.getenv("CHAT_HISTORY_COLLECTION", "longbrain_chat_history")
+MEMORIES_COLLECTION = os.getenv("MEMORIES_COLLECTION", "longbrain_memories")
+META_COLLECTION = os.getenv("META_COLLECTION", "longbrain_meta")
 
 # Single-user deployment default. Kept in every payload so a future move to a
 # shared multi-user server is a data-compatible change, not a migration.
-USER_ID = os.getenv("HERMES_USER_ID", "local")
+USER_ID = os.getenv("LONGBRAIN_USER_ID") or os.getenv("HERMES_USER_ID", "local")
 
 # Per-project memory partitioning. The hook resolves the Hermes sidebar
 # project from the turn's cwd; anything unmatched lands in "default".

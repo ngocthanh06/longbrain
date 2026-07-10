@@ -18,14 +18,14 @@ import urllib.request
 
 # Reuse the sidebar-project resolver from the sibling hook.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from post_llm_call import debug_dump, env_int, resolve_project  # noqa: E402
+from post_llm_call import debug_dump, env_get, env_int, resolve_project  # noqa: E402
 
-MEMORY_URL = os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800") + "/memory/recall"
-TIMEOUT = float(os.environ.get("HERMES_MEMORY_RECALL_TIMEOUT", "3"))
+MEMORY_URL = env_get("LONGBRAIN_MEMORY_URL", "http://localhost:8800") + "/memory/recall"
+TIMEOUT = float(env_get("LONGBRAIN_MEMORY_RECALL_TIMEOUT", "3"))
 # Same token gates as the Claude Code adapter (hooks/claude/user_prompt_submit.py):
 # skip recall for prompts too short to carry meaning, cap the injected block.
-MAX_CONTEXT_CHARS = env_int("HERMES_MEMORY_MAX_CONTEXT", 6000)
-MIN_PROMPT_CHARS = env_int("HERMES_RECALL_MIN_PROMPT_CHARS", 15)
+MAX_CONTEXT_CHARS = env_int("LONGBRAIN_MEMORY_MAX_CONTEXT", 6000)
+MIN_PROMPT_CHARS = env_int("LONGBRAIN_RECALL_MIN_PROMPT_CHARS", 15)
 
 
 def _extract_query(payload: dict) -> str:

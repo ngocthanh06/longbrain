@@ -1,7 +1,7 @@
 services:
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: hermes-qdrant
+    container_name: longbrain-qdrant
     restart: unless-stopped
     ports:
       # Bind localhost-only: Qdrant has no auth; exposing 0.0.0.0 lets the
@@ -22,7 +22,11 @@ services:
       args:
         EMBED_PROVIDER: "${EMBED_PROVIDER:-fastembed}"
         EMBED_MODEL: "${EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
-    container_name: hermes-llamaindex
+    # Explicit tag — otherwise compose names the built image after the folder
+    # (hermes-agent-llamaindex). The compose PROJECT name must stay untouched:
+    # volumes are prefixed with it, renaming it would orphan the data.
+    image: longbrain-llamaindex
+    container_name: longbrain-llamaindex
     restart: unless-stopped
     ports:
       - "127.0.0.1:8800:8000"   # localhost-only; keep 8000 free for Hermes' own hindsight memory server
@@ -44,13 +48,14 @@ services:
       CONSOLIDATION_MAX_FACTS: "${CONSOLIDATION_MAX_FACTS:-5}"
       CONSOLIDATION_MIN_IMPORTANCE: "${CONSOLIDATION_MIN_IMPORTANCE:-0.5}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
-      HERMES_USER_ID: "${HERMES_USER_ID:-local}"
-      DOCUMENTS_COLLECTION: "${DOCUMENTS_COLLECTION:-hermes_documents}"
-      CHAT_HISTORY_COLLECTION: "${CHAT_HISTORY_COLLECTION:-hermes_chat_history}"
-      MEMORIES_COLLECTION: "${MEMORIES_COLLECTION:-hermes_memories}"
+      # LONGBRAIN_USER_ID is the current name; HERMES_USER_ID stays a legacy alias.
+      LONGBRAIN_USER_ID: "${LONGBRAIN_USER_ID:-${HERMES_USER_ID:-local}}"
+      DOCUMENTS_COLLECTION: "${DOCUMENTS_COLLECTION:-longbrain_documents}"
+      CHAT_HISTORY_COLLECTION: "${CHAT_HISTORY_COLLECTION:-longbrain_chat_history}"
+      MEMORIES_COLLECTION: "${MEMORIES_COLLECTION:-longbrain_memories}"
       CHAT_MEMORY_TOKEN_LIMIT: "${CHAT_MEMORY_TOKEN_LIMIT:-3000}"
     volumes:
-      - hermes_data:/data
+      - longbrain_data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -67,7 +72,7 @@ services:
   # Then set LLM_PROVIDER=ollama and OLLAMA_BASE_URL=http://ollama:11434 in .env.
   ollama:
     image: ollama/ollama:latest
-    container_name: hermes-ollama
+    container_name: longbrain-ollama
     restart: unless-stopped
     profiles: ["ollama"]
     ports:
@@ -77,5 +82,8 @@ services:
 
 volumes:
   qdrant_data:
-  hermes_data:
+  longbrain_data:
+    # Explicit name: unprefixed, so renaming the repo folder (= compose
+    # project name) later cannot orphan the data.
+    name: longbrain_data
   ollama_data:

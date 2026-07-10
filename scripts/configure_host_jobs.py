@@ -5,8 +5,11 @@ Two jobs, both agent-independent — they must exist on EVERY install, with or
 without Hermes Desktop (a Claude-Code-only install needs the docs/ watcher
 just as much):
 
-- com.hermes.memory-backup  — nightly Qdrant backup at 2:00 AM
-- com.hermes.memory-ingest  — docs/ auto-ingest poll every 60s (L4)
+- com.longbrain.memory-backup  — nightly Qdrant backup at 2:00 AM
+- com.longbrain.memory-ingest  — docs/ auto-ingest poll every 60s (L4)
+
+Jobs installed under the pre-rename com.hermes.* labels are unloaded and
+removed before the com.longbrain.* ones go in.
 
 Run via setup.sh (or directly: python3 scripts/configure_host_jobs.py).
 Idempotent — an already-installed, identical plist is left untouched.
@@ -26,12 +29,26 @@ def _note(msg: str) -> None:
     print(f"  {msg}")
 
 
-def _install_launchd_agent(template_name: str, target_name: str, extra_note: str = "") -> bool:
+def _remove_legacy_agent(legacy_name: str) -> None:
+    """Unload + delete a pre-rename com.hermes.* job so it doesn't run twice."""
+    legacy = Path.home() / "Library" / "LaunchAgents" / legacy_name
+    if not legacy.exists():
+        return
+    subprocess.run(["launchctl", "unload", str(legacy)], capture_output=True)
+    legacy.unlink()
+    _note(f"removed legacy job {legacy_name}")
+
+
+def _install_launchd_agent(
+    template_name: str, target_name: str, legacy_name: str = "", extra_note: str = ""
+) -> bool:
     """Render a plist template into ~/Library/LaunchAgents and load it.
     Returns True when the job is installed (or already was)."""
     if sys.platform != "darwin":
         _note(f"not macOS — set up a cron job for the {target_name} equivalent yourself")
         return True
+    if legacy_name:
+        _remove_legacy_agent(legacy_name)
     template = REPO / "scripts" / template_name
     target = Path.home() / "Library" / "LaunchAgents" / target_name
     rendered = (
@@ -55,14 +72,16 @@ def _install_launchd_agent(template_name: str, target_name: str, extra_note: str
 def install_backup_agent() -> bool:
     print("==> automatic backup (launchd, 2:00 AM)")
     return _install_launchd_agent(
-        "com.hermes.memory-backup.plist.template", "com.hermes.memory-backup.plist"
+        "com.longbrain.memory-backup.plist.template", "com.longbrain.memory-backup.plist",
+        legacy_name="com.hermes.memory-backup.plist",
     )
 
 
 def install_ingest_watcher_agent() -> bool:
     print("==> docs/ auto-ingest (launchd, every 60s)")
     return _install_launchd_agent(
-        "com.hermes.memory-ingest.plist.template", "com.hermes.memory-ingest.plist",
+        "com.longbrain.memory-ingest.plist.template", "com.longbrain.memory-ingest.plist",
+        legacy_name="com.hermes.memory-ingest.plist",
         extra_note=" (watches each project's docs/ subfolder)",
     )
 

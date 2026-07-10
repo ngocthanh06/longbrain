@@ -36,7 +36,7 @@
 >   `intfloat/multilingual-e5-large`, the strongest multilingual model
 >   fastembed does support. `scripts/benchmark_embeddings.py` ran a blind
 >   LLM-judged comparison on 15 real Vietnamese chat queries against the
->   real `hermes_memories` corpus: candidate won 6, current (MiniLM) won 4,
+>   real `longbrain_memories` corpus: candidate won 6, current (MiniLM) won 4,
 >   5 ties. Too thin a margin on too small a sample to justify a full
 >   re-embed migration — staying on MiniLM.
 >   **Re-run 2026-07-10** with the larger sample that note asked for (40 real
@@ -51,7 +51,7 @@
 >   matching, which C2 hybrid BM25 addresses without touching the dense model.
 > - ✅ **Phase D complete (2026-07-07)** — `scripts/ingest_watcher.py` (stdlib-only,
 >   polls each project's `docs/` subfolder from `~/.hermes/projects.db`, one
->   pass per invocation) + `com.hermes.memory-ingest.plist.template` (launchd,
+>   pass per invocation) + `com.longbrain.memory-ingest.plist.template` (launchd,
 >   `StartInterval=60`, installed by `configure_hermes.py`). Along the way,
 >   fixed a pre-existing bug: `/ingest/file` 500'd on every call because
 >   `llama-index-readers-file` was missing from requirements.txt despite
@@ -83,7 +83,7 @@ Hermes supports more hook events than the `post_llm_call` currently in use:
 
 ### A1. Automatic consolidation (#1)
 
-**Problem:** `hermes_memories` only gets data when someone actively calls the tool — in practice nobody will.
+**Problem:** `longbrain_memories` only gets data when someone actively calls the tool — in practice nobody will.
 
 **Design — 2 trigger tiers:**
 1. **`on_session_end` hook** (new: `hooks/on_session_end.py`): session ends
@@ -160,7 +160,7 @@ short of digging through the Qdrant dashboard.
 **Design:** a launchd agent on macOS (only the host can reach both volumes via the API):
 - `scripts/backup.sh` upgraded: add retention (keep the `BACKUP_KEEP=7` newest),
   log to `logs/backup.log`, snapshot all 3 collections + copy `.env`.
-- `scripts/com.hermes.memory-backup.plist` — runs daily at 2:00 AM.
+- `scripts/com.longbrain.memory-backup.plist` — runs daily at 2:00 AM.
 - `configure_hermes.py` (or setup.sh) installs the plist into `~/Library/LaunchAgents`
   + `launchctl load`. Idempotent.
 
@@ -195,7 +195,7 @@ short of digging through the Qdrant dashboard.
 1. Automatic backup before running
 2. Create *_new collections with the new config (dense 1024 + sparse)
 3. Re-embed: L2/L3 from payload text (100% coverage), L4 from original files in /data/documents
-4. Verify point counts match → swap names (delete old, rename new) → update hermes_meta
+4. Verify point counts match → swap names (delete old, rename new) → update longbrain_meta
 5. Rollback: restore from the step-1 snapshot
 ```
 

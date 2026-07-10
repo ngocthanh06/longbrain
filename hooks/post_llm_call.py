@@ -23,7 +23,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
-MEMORY_URL = os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800") + "/memory/append"
+MEMORY_URL = os.environ.get(
+    "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
+) + "/memory/append"
 DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "hook-debug.jsonl")
 PROJECTS_DB = Path.home() / ".hermes" / "projects.db"
 
@@ -101,19 +103,28 @@ def resolve_project_with_source(cwd: str) -> tuple:
     return "default", "default"
 
 
+def env_get(name: str, default=None):
+    """LONGBRAIN_* is the current env prefix; HERMES_* stays a legacy alias
+    so existing installs keep working without touching their config."""
+    value = os.environ.get(name)
+    if value is None and name.startswith("LONGBRAIN_"):
+        value = os.environ.get("HERMES_" + name[len("LONGBRAIN_"):])
+    return default if value is None else value
+
+
 def env_int(name: str, default: int) -> int:
     """Env override parsed defensively: a malformed value ("abc") must not
     crash a best-effort hook at import time — fall back to the default."""
     try:
-        return int(os.environ.get(name, default))
+        return int(env_get(name, default))
     except (TypeError, ValueError):
         return default
 
 
 # Hook payloads carry full prompts/responses, so always-on raw logging is a
 # privacy leak plus unbounded disk growth. Opt-in only, truncated.
-DEBUG_HOOKS = os.environ.get("HERMES_DEBUG_HOOKS") == "1"
-DEBUG_MAX_CHARS = env_int("HERMES_DEBUG_HOOKS_MAX_CHARS", 2000)
+DEBUG_HOOKS = env_get("LONGBRAIN_DEBUG_HOOKS") == "1"
+DEBUG_MAX_CHARS = env_int("LONGBRAIN_DEBUG_HOOKS_MAX_CHARS", 2000)
 
 
 def debug_dump(raw: str) -> None:

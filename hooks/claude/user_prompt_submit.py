@@ -14,15 +14,15 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import env_int, post_json, read_payload, resolve_project  # noqa: E402
+from common import env_get, env_int, post_json, read_payload, resolve_project  # noqa: E402
 
-TIMEOUT = float(os.environ.get("HERMES_MEMORY_RECALL_TIMEOUT", "3"))
-MAX_CONTEXT_CHARS = env_int("HERMES_MEMORY_MAX_CONTEXT", 6000)
+TIMEOUT = float(env_get("LONGBRAIN_MEMORY_RECALL_TIMEOUT", "3"))
+MAX_CONTEXT_CHARS = env_int("LONGBRAIN_MEMORY_MAX_CONTEXT", 6000)
 # Prompts shorter than this ("ok", "tiếp tục", "continue") carry no searchable
 # meaning — recall would only match noise, and every injected block costs the
 # user's subscription tokens. The turn is still WRITTEN to memory by the Stop
 # hook; only the lookup is skipped.
-MIN_PROMPT_CHARS = env_int("HERMES_RECALL_MIN_PROMPT_CHARS", 15)
+MIN_PROMPT_CHARS = env_int("LONGBRAIN_RECALL_MIN_PROMPT_CHARS", 15)
 
 
 def main():

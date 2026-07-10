@@ -2,7 +2,7 @@
 """Auto-ingest each project's docs/ folder into the L4 knowledge base.
 
 Meant to run periodically (launchd, StartInterval=60 — see
-com.hermes.memory-ingest.plist.template), not as a long-lived daemon: each
+com.longbrain.memory-ingest.plist.template), not as a long-lived daemon: each
 invocation does one poll pass and exits. No `watchdog`/inotify dependency —
 "poll" here means comparing (mtime, size) against the last run, not
 filesystem events.
@@ -35,7 +35,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-MEMORY_URL = os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
+MEMORY_URL = os.environ.get(
+    "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
+)
 PROJECTS_DB = Path.home() / ".hermes" / "projects.db"
 DISCOVERED_PROJECTS_FILE = Path.home() / ".hermes" / "discovered_projects.json"
 STATE_FILE = Path.home() / ".hermes" / "ingest_watcher_state.json"
@@ -44,7 +46,7 @@ REQUEST_TIMEOUT = 30.0
 
 
 def log(msg: str) -> None:
-    # print() only — the launchd job (com.hermes.memory-ingest.plist)
+    # print() only — the launchd job (com.longbrain.memory-ingest.plist)
     # already redirects both stdout and stderr to logs/ingest_watcher.log,
     # so writing to that file here too would duplicate every line.
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")

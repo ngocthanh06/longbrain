@@ -13,7 +13,9 @@ import os
 import sys
 import urllib.request
 
-URL = os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800") + "/memory/consolidate-pending"
+URL = os.environ.get(
+    "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
+) + "/memory/consolidate-pending"
 
 
 def main():

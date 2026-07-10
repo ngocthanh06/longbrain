@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot setup for the Hermes memory stack — zero manual configuration.
+# One-shot setup for the Longbrain memory stack — zero manual configuration.
 # Usage: ./setup.sh
 set -euo pipefail
 
@@ -97,7 +97,7 @@ if ! command -v claude >/dev/null 2>&1; then
   step "Claude Code not found"
   if [ -t 0 ] && command -v npm >/dev/null 2>&1; then
     echo "Claude Code is the CLI that logs in with your Claude subscription (no API"
-    echo "key needed) and is what hermes-agent wires this memory stack into."
+    echo "key needed) and is what Longbrain wires this memory stack into."
     read -r -p "Install it now via 'npm install -g @anthropic-ai/claude-code'? [y/N] " claude_install_consent
     case "$claude_install_consent" in
       [yY]*)
@@ -121,25 +121,25 @@ fi
 
 if command -v claude >/dev/null 2>&1; then
   step "Configuring Claude Code automatically"
-  HERMES_CONFIGURE_CLAUDE_MD=0
+  LONGBRAIN_CONFIGURE_CLAUDE_MD=0
   if [ -t 0 ]; then
     echo "Optional: add a block to ~/.claude/CLAUDE.md (applies to EVERY project)"
     echo "teaching Claude Code to actually USE this memory stack, both directions:"
     echo "  - read:  search shared memory (past conversations of ALL agents, and"
     echo "           project docs in the knowledge base) BEFORE declaring old"
     echo "           context lost or a document unknown"
-    echo "  - write: prefer the hermes-memory MCP (localhost:8800) over Claude's"
+    echo "  - write: prefer the longbrain MCP (localhost:8800) over Claude's"
     echo "           built-in file-based memory when saving long-term facts"
     read -r -p "Add this instruction? [y/N] " claude_md_consent
     case "$claude_md_consent" in
-      [yY]*) HERMES_CONFIGURE_CLAUDE_MD=1 ;;
+      [yY]*) LONGBRAIN_CONFIGURE_CLAUDE_MD=1 ;;
       *) echo "Skipped — ~/.claude/CLAUDE.md left untouched." ;;
     esac
   else
     echo "Non-interactive shell — skipping the ~/.claude/CLAUDE.md consent prompt."
     echo "Re-run ./setup.sh in a terminal if you want to enable this option."
   fi
-  export HERMES_CONFIGURE_CLAUDE_MD
+  export LONGBRAIN_CONFIGURE_CLAUDE_MD
   python3 scripts/configure_claude.py
 else
   echo "Skipping Claude Code wiring — install it and re-run ./setup.sh."

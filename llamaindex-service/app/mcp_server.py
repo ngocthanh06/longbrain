@@ -21,7 +21,7 @@ class Fact(BaseModel):
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
-mcp = FastMCP("hermes-memory", stateless_http=True) if FastMCP else None
+mcp = FastMCP("longbrain", stateless_http=True) if FastMCP else None
 
 
 def _register_tools() -> None:

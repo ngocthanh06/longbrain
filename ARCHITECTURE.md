@@ -36,9 +36,9 @@ flowchart TB
         MCP --> ENGINE
     end
 
-    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>hermes_chat_history · hermes_memories<br/>hermes_documents · hermes_meta")]
+    ENGINE -- "HTTP :6333" --> QD[("Qdrant<br/>longbrain_chat_history · longbrain_memories<br/>longbrain_documents · longbrain_meta")]
     QD -.-> VOL[("volume: qdrant_data")]
-    ENGINE -.-> DVOL[("volume: hermes_data<br/>/data — original document files")]
+    ENGINE -.-> DVOL[("volume: longbrain_data<br/>/data — original document files")]
 
     OLLAMA["ollama (optional profile)"] -. "--profile ollama" .-> SVC
 ```
@@ -48,9 +48,9 @@ flowchart TB
 | Layer | Role | Stored in | Module |
 |---|---|---|---|
 | **L1 Working** | Current-session context — a `ChatMemoryBuffer` (~3000-token cap) rebuilt from L2 every turn | RAM (rebuilt per request) | `main.py` |
-| **L2 Episodic** | Every raw conversation turn (user + assistant), embedded → semantically searchable across sessions | `hermes_chat_history` | `memory_store.py` |
-| **L3 Semantic** | Facts distilled from L2: decisions, preferences, project info, tasks — the permanently memorable stuff | `hermes_memories` | `memories.py`, `consolidation.py` |
-| **L4 Knowledge** | Ingested documents (PDF/text/markdown) — classic RAG | `hermes_documents` + original files in `/data/documents` | `documents.py` |
+| **L2 Episodic** | Every raw conversation turn (user + assistant), embedded → semantically searchable across sessions | `longbrain_chat_history` | `memory_store.py` |
+| **L3 Semantic** | Facts distilled from L2: decisions, preferences, project info, tasks — the permanently memorable stuff | `longbrain_memories` | `memories.py`, `consolidation.py` |
+| **L4 Knowledge** | Ingested documents (PDF/text/markdown) — classic RAG | `longbrain_documents` + original files in `/data/documents` | `documents.py` |
 
 All four layers are agent-agnostic — the engine has no idea whether a turn
 came from Hermes or Claude Code. Provenance rides along as one extra payload
@@ -75,8 +75,8 @@ sequenceDiagram
     Hook->>API: {session_id, user_message, assistant_response,<br/>project_id, project_source, source_agent}
     API->>Store: add_message() per role
     Store->>Store: embed content (fastembed, in-container)<br/>point ID = uuid5(user_id:session_id:role:sha256(content))<br/>→ IDEMPOTENT: retries never duplicate
-    Store->>Qdrant: upsert into hermes_chat_history
-    Store->>Qdrant: touch last_written_at in hermes_meta
+    Store->>Qdrant: upsert into longbrain_chat_history
+    Store->>Qdrant: touch last_written_at in longbrain_meta
 ```
 
 The hook set differs per agent (see §7) but the contract is identical: POST
@@ -122,8 +122,8 @@ sequenceDiagram
     participant Qdrant
 
     Caller->>Engine: {query, session_id?, project?}
-    Engine->>Qdrant: search hermes_memories (L3, filter out superseded)<br/>similarity = max(dense cosine, 0.6 × BM25 ratio)<br/>score = similarity × 0.5^(age/90d) × (0.5+0.5×importance)
-    Engine->>Qdrant: search hermes_chat_history (L2, other sessions)<br/>similarity = max(dense cosine, 0.6 × BM25 ratio)<br/>score = similarity × 0.5^(age/30d)
+    Engine->>Qdrant: search longbrain_memories (L3, filter out superseded)<br/>similarity = max(dense cosine, 0.6 × BM25 ratio)<br/>score = similarity × 0.5^(age/90d) × (0.5+0.5×importance)
+    Engine->>Qdrant: search longbrain_chat_history (L2, other sessions)<br/>similarity = max(dense cosine, 0.6 × BM25 ratio)<br/>score = similarity × 0.5^(age/30d)
     Engine->>Engine: L1 — N most recent turns of the current session
     Engine-->>Caller: context_block:<br/>[Long-term memories] … [Related past conversations] … [Most recent turns] …
 ```
@@ -151,7 +151,7 @@ model (default 384 — `paraphrase-multilingual-MiniLM-L12-v2`). Each data
 collection additionally carries a named sparse vector `bm25` (IDF modifier)
 for the hybrid exact-token channel (§3c); the dense vector stays unnamed.
 
-### `hermes_chat_history` (L2)
+### `longbrain_chat_history` (L2)
 ```jsonc
 // point ID: uuid5("msg:{user_id}:{session_id}:{role}:{sha256(content)}")
 {
@@ -167,7 +167,7 @@ for the hybrid exact-token channel (§3c); the dense vector stays unnamed.
 }
 ```
 
-### `hermes_memories` (L3)
+### `longbrain_memories` (L3)
 ```jsonc
 // point ID: uuid5("fact:{user_id}:{sha256(normalized_text)}")
 {
@@ -183,7 +183,7 @@ for the hybrid exact-token channel (§3c); the dense vector stays unnamed.
 }
 ```
 
-### `hermes_documents` (L4)
+### `longbrain_documents` (L4)
 Managed by LlamaIndex's `QdrantVectorStore` (chunks + metadata `user_id`,
 `source`, `stored_path` → original file in `/data/documents/<sha12>_<name>`).
 `stored_path` is content-addressed (the sha lives in the filename) and
@@ -193,7 +193,7 @@ an unchanged file a no-op instead of piling up duplicate chunks. This is what
 lets `scripts/ingest_watcher.py` poll each project's `docs/` folder (§9, §10)
 and re-run safely.
 
-### `hermes_meta` (guard)
+### `longbrain_meta` (guard)
 A single fixed point, vector dim=1: `{schema_version, embed_provider,
 embed_model, embed_dim, last_written_at}`. At startup the service compares the
 current config against the meta — **an embedding mismatch refuses to boot**
@@ -294,9 +294,9 @@ CLI isn't found):
    `SessionEnd` (consolidate), `SessionStart` (catch-up sweep, no output —
    `UserPromptSubmit` already owns context injection).
 2. **MCP registration**: `claude mcp add --scope user --transport http
-   hermes-memory http://localhost:8800/mcp` — available in every project.
+   longbrain http://localhost:8800/mcp` — available in every project.
 3. **Optional `~/.claude/CLAUDE.md` block** (consent-gated, interactive only):
-   tells Claude to prefer the `mcp__hermes-memory__*` tools over its own
+   tells Claude to prefer the `mcp__longbrain__*` tools over its own
    built-in file-based auto-memory when both are available.
 
 **No API key anywhere on this path** — Claude Code runs on its own
@@ -346,7 +346,7 @@ the same service:
   `~/.hermes/projects.db` merged with the Hermes-independent fallback
   catalog (§11), sends new/changed files under each project's `docs/`
   subfolder to `/ingest/file`. Log: `logs/ingest_watcher.log`.
-- **Data**: named volumes `qdrant_data` (vectors) + `hermes_data` (original files).
+- **Data**: named volumes `qdrant_data` (vectors) + `longbrain_data` (original files).
   `docker compose down -v` = wipe everything and start over.
 - **Ports**: 8800 (service — keeps 8000 free for Hermes' hindsight server),
   6333/6334 (Qdrant), 11434 (Ollama if the profile is enabled).
@@ -354,7 +354,7 @@ the same service:
 ## 10. Source layout
 
 ```
-hermes-agent/
+longbrain/
 ├── setup.sh                     # one-command install: Docker + auto-wiring for every installed agent
 ├── docker-compose.yml           # qdrant + llamaindex (+ optional ollama profile)
 ├── .env.example                 # provider/collection configuration
@@ -474,7 +474,7 @@ might run a different embedding model. `transfer.py` solves that with a
 
 ```
 GET /memory/export
-  → scrolls hermes_chat_history + hermes_memories + hermes_documents
+  → scrolls longbrain_chat_history + longbrain_memories + longbrain_documents
   → bundle = { format, version, facts[], turns[], documents[] }
      (payload text + metadata only — NO vectors, so the bundle is
       independent of whichever embedding model produced it)

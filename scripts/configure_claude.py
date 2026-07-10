@@ -10,16 +10,17 @@ Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
                    "ultracode" keyword trigger to off (SETTINGS_DEFAULTS —
                    never overriding a key the user already set). Other
                    hooks/settings are left untouched.
-2. MCP           — register the hermes-memory MCP server user-scoped via
+2. MCP           — register the longbrain MCP server user-scoped via
                    `claude mcp add` so the memory tools (recall, save_facts,
                    forget_about, consolidate_session, …) are available in
-                   every project.
-3. CLAUDE.md     — opt-in only (HERMES_CONFIGURE_CLAUDE_MD=1, set by setup.sh
-                   after asking the user): append/update a marked block in
-                   ~/.claude/CLAUDE.md telling Claude to (a) search the
-                   shared memory (search_history / memory_recall) before
+                   every project. A registration under the legacy name
+                   `hermes-memory` is removed so tools don't show up twice.
+3. CLAUDE.md     — opt-in only (LONGBRAIN_CONFIGURE_CLAUDE_MD=1, set by
+                   setup.sh after asking the user): append/update a marked
+                   block in ~/.claude/CLAUDE.md telling Claude to (a) search
+                   the shared memory (search_history / memory_recall) before
                    declaring past-session context lost, and (b) prefer the
-                   mcp__hermes-memory__* tools over its own built-in
+                   mcp__longbrain__* tools over its own built-in
                    file-based auto-memory when both are available.
 
 No API key is needed anywhere in this path: Claude Code runs on its own
@@ -42,24 +43,28 @@ from pathlib import Path
 SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
 REPO = Path(__file__).resolve().parent.parent
-MCP_NAME = "hermes-memory"
+MCP_NAME = "longbrain"
+MCP_NAME_LEGACY = "hermes-memory"  # pre-rename installs; deregistered on sight
 MCP_URL = "http://localhost:8800/mcp"
 
-MARKER_START = "<!-- hermes-agent:memory-priority:start (auto-managed by hermes-agent setup, do not edit inside) -->"
-MARKER_END = "<!-- hermes-agent:memory-priority:end -->"
+MARKER_START = "<!-- longbrain:memory-priority:start (auto-managed by longbrain setup, do not edit inside) -->"
+MARKER_END = "<!-- longbrain:memory-priority:end -->"
+# Markers written by pre-rename installs — found blocks get replaced in place.
+MARKER_START_LEGACY = "<!-- hermes-agent:memory-priority:start (auto-managed by hermes-agent setup, do not edit inside) -->"
+MARKER_END_LEGACY = "<!-- hermes-agent:memory-priority:end -->"
 CLAUDE_MD_BLOCK = f"""{MARKER_START}
-## Long-term memory (hermes-agent) — shared across agents
+## Long-term memory (Longbrain) — shared across agents
 
 **Recall (read):** When the user refers to content from a previous
 conversation or session that is not in your current context (e.g. "the
 review from earlier", "as we discussed last time", "give me that again"),
 do NOT declare the context lost or redo the work from scratch. FIRST call
-`mcp__hermes-memory__search_history` (and `mcp__hermes-memory__memory_recall`
+`mcp__longbrain__search_history` (and `mcp__longbrain__memory_recall`
 for distilled facts) to retrieve it. The memory service stores past turns
 from ALL connected agents (Claude Code, Hermes Desktop, …), so the answer
 may exist even when this session has no trace of it. Likewise, when the
 user asks about a project document or spec (anything that could live in a
-`docs/` folder), call `mcp__hermes-memory__search_knowledge_base` before
+`docs/` folder), call `mcp__longbrain__search_knowledge_base` before
 saying the document is unknown — project `docs/` folders are auto-ingested
 into the shared knowledge base. Only fall back to reconstructing from
 code/files when the memory search returns nothing relevant — and say that
@@ -67,13 +72,13 @@ the search came up empty.
 
 **Save (write):** When you decide on your own to save long-term memory (a
 fact, decision, or preference worth keeping), prefer calling the
-`mcp__hermes-memory__*` tools (e.g. `save_memories`,
+`mcp__longbrain__*` tools (e.g. `save_memories`,
 `add_to_knowledge_base`) if they appear in this session's tool list — that
 memory is shared across agents via a local service at
 http://localhost:8800.
 
 Only fall back to your own built-in file-based auto-memory
-(`~/.claude/projects/.../memory/*.md`) when no `mcp__hermes-memory__*`
+(`~/.claude/projects/.../memory/*.md`) when no `mcp__longbrain__*`
 tools are available in this session (the MCP server is not registered or
 not reachable).
 {MARKER_END}"""
@@ -180,6 +185,20 @@ def register_mcp() -> None:
         fail("`claude` CLI not found on PATH — register manually: "
              f"claude mcp add --scope user --transport http {MCP_NAME} {MCP_URL}")
         return
+    # Deregister the pre-rename name first so the tools don't show up twice.
+    legacy = subprocess.run(
+        [claude, "mcp", "get", MCP_NAME_LEGACY], capture_output=True, text=True, timeout=30
+    )
+    if legacy.returncode == 0:
+        removed = subprocess.run(
+            [claude, "mcp", "remove", "--scope", "user", MCP_NAME_LEGACY],
+            capture_output=True, text=True, timeout=30,
+        )
+        if removed.returncode == 0:
+            note(f"removed legacy MCP registration {MCP_NAME_LEGACY}")
+        else:
+            fail(f"could not remove legacy MCP {MCP_NAME_LEGACY}: "
+                 f"{(removed.stderr or removed.stdout).strip()}")
     probe = subprocess.run(
         [claude, "mcp", "get", MCP_NAME], capture_output=True, text=True, timeout=30
     )
@@ -198,20 +217,32 @@ def register_mcp() -> None:
 
 def patch_claude_md() -> None:
     print("==> ~/.claude/CLAUDE.md (memory priority instruction)")
-    if os.environ.get("HERMES_CONFIGURE_CLAUDE_MD") != "1":
-        note("skipped (user did not opt in during setup)")
-        return
-
+    # An existing block (either marker generation) is proof of a past opt-in:
+    # keep it current without re-asking — a declined re-run must not strand
+    # instructions pointing at the deregistered mcp__hermes-memory__* tools.
+    # The opt-in prompt only gates ADDING the block to an untouched file.
     text = CLAUDE_MD.read_text() if CLAUDE_MD.exists() else ""
-    if MARKER_START in text and MARKER_END in text:
-        start = text.index(MARKER_START)
-        end = text.index(MARKER_END) + len(MARKER_END)
-        new_text = text[:start] + CLAUDE_MD_BLOCK + text[end:]
-        if new_text == text:
-            note("already present and up to date")
+    for start_marker, end_marker in (
+        (MARKER_START, MARKER_END),
+        (MARKER_START_LEGACY, MARKER_END_LEGACY),
+    ):
+        if start_marker in text and end_marker in text:
+            start = text.index(start_marker)
+            end = text.index(end_marker) + len(end_marker)
+            new_text = text[:start] + CLAUDE_MD_BLOCK + text[end:]
+            if new_text == text:
+                note("already present and up to date")
+                return
+            CLAUDE_MD.write_text(new_text)
+            note("updated existing block"
+                 + (" (migrated from legacy markers)" if start_marker == MARKER_START_LEGACY else ""))
             return
-        CLAUDE_MD.write_text(new_text)
-        note("updated existing block")
+
+    opted_in = os.environ.get(
+        "LONGBRAIN_CONFIGURE_CLAUDE_MD", os.environ.get("HERMES_CONFIGURE_CLAUDE_MD")
+    )
+    if opted_in != "1":
+        note("skipped (user did not opt in during setup)")
         return
 
     CLAUDE_MD.parent.mkdir(parents=True, exist_ok=True)

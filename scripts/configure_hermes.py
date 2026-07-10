@@ -6,7 +6,8 @@ Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
 1. config.yaml   — register the 3 memory hooks (post_llm_call: write turns,
                    pre_llm_call: auto-inject recall, on_session_end: trigger
                    consolidation), hooks_auto_accept: true, and the
-                   hermes-memory MCP server.
+                   longbrain MCP server (an entry under the legacy name
+                   hermes-memory is removed).
 2. allowlist     — record hook consent in ~/.hermes/shell-hooks-allowlist.json
                    (Desktop has no TTY to approve interactively).
 3. serve patch   — Hermes bug: `hermes serve` (the Desktop backend) is missing
@@ -119,13 +120,17 @@ def patch_config() -> None:
     mcp = cfg.setdefault("mcp_servers", {})
     if not isinstance(mcp, dict):
         mcp = cfg["mcp_servers"] = {}
-    entry = mcp.get("hermes-memory")
-    if not (isinstance(entry, dict) and entry.get("url") == MCP_URL and entry.get("enabled")):
-        mcp["hermes-memory"] = {"url": MCP_URL, "enabled": True}
+    if "hermes-memory" in mcp:  # pre-rename installs
+        del mcp["hermes-memory"]
         changed = True
-        note("registered MCP hermes-memory")
+        note("removed legacy MCP entry hermes-memory")
+    entry = mcp.get("longbrain")
+    if not (isinstance(entry, dict) and entry.get("url") == MCP_URL and entry.get("enabled")):
+        mcp["longbrain"] = {"url": MCP_URL, "enabled": True}
+        changed = True
+        note("registered MCP longbrain")
     else:
-        note("MCP hermes-memory already present")
+        note("MCP longbrain already present")
 
     if changed:
         _backup(CONFIG)
@@ -203,21 +208,24 @@ def patch_serve() -> None:
 
 # ---------------------------------------------------------------------------
 # 3b. SOUL.md memory routing — Hermes has a built-in memory tool (a small
-# capped markdown blob) that competes with the hermes-memory MCP tools for
+# capped markdown blob) that competes with the longbrain MCP tools for
 # explicit "remember/forget" commands. This guidance routes durable memory
 # to the MCP tools; built-in keeps only a short identity summary.
 # ---------------------------------------------------------------------------
-SOUL_MARKER_START = "<!-- hermes-memory routing (managed by hermes-agent setup.sh) -->"
-SOUL_MARKER_END = "<!-- /hermes-memory routing -->"
+SOUL_MARKER_START = "<!-- longbrain routing (managed by longbrain setup.sh) -->"
+SOUL_MARKER_END = "<!-- /longbrain routing -->"
+# Markers written by pre-rename installs — found blocks get replaced in place.
+SOUL_MARKER_START_LEGACY = "<!-- hermes-memory routing (managed by hermes-agent setup.sh) -->"
+SOUL_MARKER_END_LEGACY = "<!-- /hermes-memory routing -->"
 SOUL_BLOCK = f"""{SOUL_MARKER_START}
 ## Long-term memory routing
 For durable information — user facts, preferences, decisions, project info,
-deadlines, commitments — ALWAYS use the hermes-memory MCP tools:
+deadlines, commitments — ALWAYS use the longbrain MCP tools:
 - `save_memories` to remember; `forget_about` then `forget_memory` to forget
 - `memory_recall` / `search_history` to look up past conversations
 - `forget_session` / `forget_everything` (only with the user's explicit
   confirmation) for bigger resets
-When the user says "remember X" or "forget X", that means the hermes-memory
+When the user says "remember X" or "forget X", that means the longbrain
 MCP tools — NOT the built-in memory tool. Use the built-in memory tool only
 for a short core identity summary (name, machine, language preference).
 {SOUL_MARKER_END}"""
@@ -226,14 +234,19 @@ for a short core identity summary (name, machine, language preference).
 def patch_soul() -> None:
     print("==> SOUL.md (memory routing for the model)")
     text = SOUL.read_text() if SOUL.exists() else ""
-    if SOUL_MARKER_START in text and SOUL_MARKER_END in text:
-        start = text.index(SOUL_MARKER_START)
-        end = text.index(SOUL_MARKER_END) + len(SOUL_MARKER_END)
-        if text[start:end] == SOUL_BLOCK:
-            note("already present, unchanged")
-            return
-        text = text[:start] + SOUL_BLOCK + text[end:]
-        note("updated routing block")
+    for start_marker, end_marker in (
+        (SOUL_MARKER_START, SOUL_MARKER_END),
+        (SOUL_MARKER_START_LEGACY, SOUL_MARKER_END_LEGACY),
+    ):
+        if start_marker in text and end_marker in text:
+            start = text.index(start_marker)
+            end = text.index(end_marker) + len(end_marker)
+            if text[start:end] == SOUL_BLOCK:
+                note("already present, unchanged")
+                return
+            text = text[:start] + SOUL_BLOCK + text[end:]
+            note("updated routing block")
+            break
     else:
         text = (text.rstrip() + "\n\n" if text.strip() else "") + SOUL_BLOCK + "\n"
         note("added routing block")

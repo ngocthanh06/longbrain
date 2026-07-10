@@ -22,10 +22,10 @@ import subprocess
 import sys
 import urllib.request
 
-MEMORY_URL = os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
+MEMORY_URL = os.environ.get("LONGBRAIN_MEMORY_URL", "http://localhost:8800")
 AGENT_NAME = "python-minimal"  # <- your agent's name; stamps every record
-MAX_CONTEXT_CHARS = int(os.environ.get("HERMES_MEMORY_MAX_CONTEXT", "6000"))
-MIN_PROMPT_CHARS = int(os.environ.get("HERMES_RECALL_MIN_PROMPT_CHARS", "15"))
+MAX_CONTEXT_CHARS = int(os.environ.get("LONGBRAIN_MEMORY_MAX_CONTEXT", "6000"))
+MIN_PROMPT_CHARS = int(os.environ.get("LONGBRAIN_RECALL_MIN_PROMPT_CHARS", "15"))
 
 
 def post(path: str, body: dict, timeout: float = 5.0):

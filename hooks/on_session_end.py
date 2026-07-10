@@ -14,9 +14,9 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from post_llm_call import debug_dump  # noqa: E402
+from post_llm_call import debug_dump, env_get  # noqa: E402
 
-MEMORY_URL = os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800") + "/memory/consolidate"
+MEMORY_URL = env_get("LONGBRAIN_MEMORY_URL", "http://localhost:8800") + "/memory/consolidate"
 
 
 def main():
