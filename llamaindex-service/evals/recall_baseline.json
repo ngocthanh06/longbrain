@@ -1,9 +1,9 @@
 {
  "summary": {
-  "include_hits": 10,
-  "include_expected": 10,
+  "include_hits": 11,
+  "include_expected": 11,
   "violations": 0,
-  "total_chars": 7652
+  "total_chars": 11177
  },
  "cases": [
   {
@@ -13,7 +13,7 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 781,
+   "chars": 1097,
    "note": ""
   },
   {
@@ -23,7 +23,7 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 563,
+   "chars": 720,
    "note": ""
   },
   {
@@ -34,7 +34,7 @@
    "misses": [],
    "violations": [],
    "chars": 598,
-   "note": "decision của shopmed không được lọt vào câu hỏi thuần bookinghub — thước đo cho #4 (global vs project scope)"
+   "note": "shopmed decisions must not leak into a bookinghub-only question — gauge for #4 (global vs project scope)"
   },
   {
    "name": "vn-global-preference",
@@ -43,7 +43,7 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 796,
+   "chars": 1102,
    "note": ""
   },
   {
@@ -53,7 +53,7 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 697,
+   "chars": 1151,
    "note": ""
   },
   {
@@ -73,8 +73,8 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 1105,
-   "note": "cần channel docs trong recall — thước đo cho #1 (memory router); fail với pipeline hiện tại là dự kiến"
+   "chars": 1580,
+   "note": "needs a docs channel in recall — gauge for #1 (memory router); expected to fail against the current pipeline"
   },
   {
    "name": "en-docs-availability",
@@ -84,7 +84,7 @@
    "misses": [],
    "violations": [],
    "chars": 1017,
-   "note": "cần channel docs trong recall — thước đo cho #1 (memory router); fail với pipeline hiện tại là dự kiến"
+   "note": "needs a docs channel in recall — gauge for #1 (memory router); expected to fail against the current pipeline"
   },
   {
    "name": "vn-exact-token-bm25",
@@ -93,8 +93,8 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 1249,
-   "note": "exact-token rescue qua kênh sparse — thước đo cho C2 hybrid BM25"
+   "chars": 1565,
+   "note": "exact-token rescue via the sparse channel — gauge for C2 hybrid BM25"
   },
   {
    "name": "vn-noise-rejection",
@@ -103,8 +103,18 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 386,
+   "chars": 736,
    "note": ""
+  },
+  {
+   "name": "vn-preference-vs-fresh-facts",
+   "hits": [
+    "Co-Authored-By"
+   ],
+   "misses": [],
+   "violations": [],
+   "chars": 1151,
+   "note": "a standing-convention preference (4 days old, default importance) must win the top-k race against fresh same-topic status facts at the moment of ACTING — gauge for RECALL_PREFERENCE_BOOST; reproduces the real 2026-07-10 failure (Co-Authored-By trailer added even though the preference was saved)"
   }
  ]
 }

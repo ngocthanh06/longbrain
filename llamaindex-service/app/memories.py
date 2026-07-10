@@ -326,6 +326,11 @@ def search_memories(
         hit_project = payload.get("project_id") or config.DEFAULT_PROJECT
         if project and hit_project == project:
             final *= config.RECALL_PROJECT_BOOST
+        if payload.get("type") == "preference":
+            # Standing conventions must survive the top-k race against
+            # fresher, project-boosted same-topic facts at the moment of
+            # acting on them (see config.RECALL_PREFERENCE_BOOST).
+            final *= config.RECALL_PREFERENCE_BOOST
         scored.append(
             {
                 "id": str(e["id"]),

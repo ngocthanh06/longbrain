@@ -7,7 +7,11 @@
       {"text": "Quyết định của dự án shopmed: đếm lượt sử dụng AI import tại thời điểm job hoàn thành, không phải lúc tạo job", "type": "decision", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Dự án bookinghub viết bằng Go theo clean architecture, 5 module: auth, booking, merchant, user, example", "type": "fact", "project": "bookinghub", "source_agent": "claude-code"},
       {"text": "Quyết định của dự án bookinghub: hai booking chạm cạnh (edge-to-edge) không tính là trùng giờ", "type": "decision", "project": "bookinghub", "source_agent": "hermes"},
-      {"text": "Người dùng yêu cầu commit với tác giả cá nhân của họ, không thêm dòng Co-Authored-By nào khác", "type": "preference", "project": "default", "source_agent": "claude-code"},
+      {"text": "Người dùng yêu cầu commit với tác giả cá nhân của họ, không thêm dòng Co-Authored-By nào khác", "type": "preference", "project": "default", "source_agent": "claude-code", "age_days": 4},
+      {"text": "Trạng thái shopmed mới nhất: toàn bộ đợt thay đổi đã được commit, working tree sạch, còn lại việc push lên origin", "type": "fact", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
+      {"text": "Đợt commit mới nhất của shopmed gồm 3 commit: sửa lỗi hiển thị đồ thị, đổi tên định danh dịch vụ, bổ sung tài liệu giấy phép", "type": "fact", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
+      {"text": "Quyết định shopmed: mỗi đợt thay đổi được chia thành nhiều commit theo từng nhóm concern riêng biệt", "type": "decision", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
+      {"text": "Roadmap shopmed sau đợt commit refactor: việc tiếp theo là đặt tên tường minh cho volume dữ liệu rồi cập nhật bộ nhớ dự án", "type": "task", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
       {"text": "Người dùng thích giao diện cuộn chuột mượt và hiệu ứng zoom khi lọc dữ liệu", "type": "preference", "project": "default", "source_agent": "hermes"},
       {"text": "Người dùng muốn mọi comment trong code viết bằng tiếng Anh", "type": "preference", "project": "default", "source_agent": "claude-code"}
     ],
@@ -44,7 +48,7 @@
       "project": "bookinghub",
       "expect_include": ["edge-to-edge"],
       "expect_exclude": ["AI import"],
-      "note": "decision của shopmed không được lọt vào câu hỏi thuần bookinghub — thước đo cho #4 (global vs project scope)"
+      "note": "shopmed decisions must not leak into a bookinghub-only question — gauge for #4 (global vs project scope)"
     },
     {
       "name": "vn-global-preference",
@@ -73,7 +77,7 @@
       "project": "shopmed",
       "expect_include": ["10MB"],
       "expect_exclude": [],
-      "note": "cần channel docs trong recall — thước đo cho #1 (memory router); fail với pipeline hiện tại là dự kiến"
+      "note": "needs a docs channel in recall — gauge for #1 (memory router); expected to fail against the current pipeline"
     },
     {
       "name": "en-docs-availability",
@@ -81,7 +85,7 @@
       "project": "bookinghub",
       "expect_include": ["capacity_per_unit"],
       "expect_exclude": [],
-      "note": "cần channel docs trong recall — thước đo cho #1 (memory router); fail với pipeline hiện tại là dự kiến"
+      "note": "needs a docs channel in recall — gauge for #1 (memory router); expected to fail against the current pipeline"
     },
     {
       "name": "vn-exact-token-bm25",
@@ -89,7 +93,7 @@
       "project": "shopmed",
       "expect_include": ["ERR_UPLOAD_413"],
       "expect_exclude": [],
-      "note": "exact-token rescue qua kênh sparse — thước đo cho C2 hybrid BM25"
+      "note": "exact-token rescue via the sparse channel — gauge for C2 hybrid BM25"
     },
     {
       "name": "vn-noise-rejection",
@@ -97,6 +101,14 @@
       "project": "shopmed",
       "expect_include": ["PSR12"],
       "expect_exclude": ["zoom"]
+    },
+    {
+      "name": "vn-preference-vs-fresh-facts",
+      "query": "commit các thay đổi cho tôi và cập nhật lại bộ nhớ nhé",
+      "project": "shopmed",
+      "expect_include": ["Co-Authored-By"],
+      "expect_exclude": [],
+      "note": "a standing-convention preference (4 days old, default importance) must win the top-k race against fresh same-topic status facts at the moment of ACTING — gauge for RECALL_PREFERENCE_BOOST; reproduces the real 2026-07-10 failure (Co-Authored-By trailer added even though the preference was saved)"
     }
   ]
 }

@@ -27,6 +27,7 @@ Run inside the service container (needs app deps + the embedding model):
 
 import json
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -46,9 +47,23 @@ BASELINE_FILE = REPO / "llamaindex-service" / "evals" / "recall_baseline.json"
 def seed(client: QdrantClient, embed, index, corpus: dict) -> None:
     for f in corpus.get("facts", []):
         memories.save_facts(
-            client, embed, [{"text": f["text"], "type": f.get("type", "fact")}],
+            client, embed,
+            [{"text": f["text"], "type": f.get("type", "fact"),
+              "importance": f.get("importance", 0.5)}],
             project_id=f.get("project", ""), source_agent=f.get("source_agent", ""),
         )
+        if f.get("age_days"):
+            # Backdate created_at so cases can stage the top-k race between
+            # an old standing preference and fresh same-topic facts — the
+            # point id is deterministic, so the seeded point is addressable.
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"created_at": time.time() - f["age_days"] * 86400},
+                points=[memories.fact_point_id(
+                    config.USER_ID, f["text"],
+                    f.get("project") or config.DEFAULT_PROJECT,
+                )],
+            )
     for turn in corpus.get("history", []):
         memory_store.add_message(
             client, embed, turn["session"], turn["role"], turn["content"],

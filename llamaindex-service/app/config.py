@@ -91,6 +91,16 @@ DEDUP_LLM_CHECK_MIN = float(os.getenv("DEDUP_LLM_CHECK_MIN", "0.60"))
 # ranks same-project hits above default-project ones. Cross-project lookups
 # stay available through the explicit MCP search tools (no project given).
 RECALL_PROJECT_BOOST = float(os.getenv("RECALL_PROJECT_BOOST", "1.5"))
+# Recall multiplier for type=preference hits. Preferences are standing
+# conventions (commit style, comment language, workflow) that matter most at
+# the moment of ACTING on them, yet that is exactly when they lose the top-k
+# race: an action prompt ("commit this for me") matches fresh same-topic
+# status facts — newer (less decay), higher importance, project-boosted —
+# while the older global preference sits at default importance with no boost.
+# Measured failure 2026-07-10: a stored "no Co-Authored-By trailer"
+# preference was not recalled on a commit request and the agent followed its
+# harness default instead (eval case vn-preference-vs-fresh-facts).
+RECALL_PREFERENCE_BOOST = float(os.getenv("RECALL_PREFERENCE_BOOST", "1.5"))
 
 # ---------------------------------------------------------------------------
 # Hybrid recall (C2): a BM25 sparse channel next to the dense vectors, for
