@@ -366,6 +366,15 @@ def memory_graph(
     )
 
 
+@app.get("/memory/stats")
+def memory_stats():
+    """At-a-glance health for the /ui dashboard: counts, superseded ratio,
+    growth, consolidation backlog."""
+    stats = memories.health_stats(state["qdrant_client"])
+    stats["consolidation_backlog"] = len(scheduler.pending_sessions(state["qdrant_client"]))
+    return stats
+
+
 @app.get("/memory/facts")
 def memory_list_facts(
     project: str = "", type: str = "", include_superseded: bool = False,

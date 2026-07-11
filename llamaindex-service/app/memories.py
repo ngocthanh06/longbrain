@@ -558,6 +558,77 @@ def list_facts(
     ]
 
 
+def health_stats(client: QdrantClient, user_id: str = config.USER_ID) -> dict:
+    """At-a-glance counts for the /ui health panel: no new storage, no
+    time-series — "growth" is approximated from created_at on facts already
+    on disk. Consolidation backlog is NOT included here (would need
+    importing scheduler, which imports consolidation, which imports this
+    module — a cycle); the /memory/stats endpoint merges it in."""
+    must = [qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id))]
+    flt = qmodels.Filter(must=must, must_not=[
+        qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary")),
+    ])
+    points = []
+    offset = None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=config.MEMORIES_COLLECTION,
+            scroll_filter=flt,
+            limit=256,
+            offset=offset,
+            with_payload=["type", "superseded_by", "created_at", "project_id",
+                          "status", "conflicts_with"],
+            with_vectors=False,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    now = time.time()
+    by_type: dict[str, int] = {}
+    by_project: dict[str, int] = {}
+    total_active = total_superseded = 0
+    new_24h = new_7d = 0
+    open_tasks = done_tasks = 0
+    flagged_conflicts = 0
+    for p in points:
+        payload = p.payload
+        if payload.get("superseded_by"):
+            total_superseded += 1
+            continue
+        total_active += 1
+        ftype = payload.get("type", "fact")
+        by_type[ftype] = by_type.get(ftype, 0) + 1
+        project = payload.get("project_id") or config.DEFAULT_PROJECT
+        by_project[project] = by_project.get(project, 0) + 1
+        created_at = payload.get("created_at")
+        if created_at:
+            age = now - created_at
+            if age <= 86400:
+                new_24h += 1
+            if age <= 7 * 86400:
+                new_7d += 1
+        if ftype == "task":
+            done_tasks += 1 if payload.get("status") == "done" else 0
+            open_tasks += 1 if payload.get("status") != "done" else 0
+        if payload.get("conflicts_with"):
+            flagged_conflicts += 1
+
+    total = total_active + total_superseded
+    return {
+        "total_active": total_active,
+        "total_superseded": total_superseded,
+        "superseded_ratio": round(total_superseded / total, 4) if total else 0.0,
+        "by_type": by_type,
+        "by_project": by_project,
+        "new_last_24h": new_24h,
+        "new_last_7d": new_7d,
+        "open_tasks": open_tasks,
+        "done_tasks": done_tasks,
+        "flagged_conflicts": flagged_conflicts,
+    }
+
+
 def set_fact_project(client: QdrantClient, fact_id: str, project_id: str) -> bool:
     """Re-tag one fact (user correction from /ui). False if the id is unknown."""
     existing = client.retrieve(

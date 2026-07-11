@@ -160,6 +160,16 @@
   #legend .lg-row b { color: var(--text-primary); }
   #legend .lg-glyph { flex: none; width: 16px; text-align: center; }
   #legend .lg-sep { border-top: 1px solid var(--border); margin: 8px 0; }
+  #health {
+    position: absolute; top: 12px; right: 12px; z-index: 8; display: none;
+    max-width: 320px; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow); padding: 12px 14px;
+  }
+  #health .hl-title { font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 8px; }
+  #health .hl-row { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--text-secondary); }
+  #health .hl-row b { color: var(--text-primary); }
+  #health .hl-sep { border-top: 1px solid var(--border); margin: 8px 0; }
+  #health .hl-sub { color: var(--text-muted); font-size: 11px; margin-bottom: 2px; }
   #tooltip {
     position: absolute; pointer-events: none; display: none; max-width: 340px;
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
@@ -315,6 +325,7 @@
   <button class="btn" id="bundleImportBtn" title="Import a bundle exported on another machine — re-embeds with the current model, existing records are skipped">⇪ Import</button>
   <button class="btn" id="themeBtn" title="Theme: auto / light / dark">◐ auto</button>
   <button class="btn" id="legendBtn" title="What do the shapes and colors mean?">?</button>
+  <button class="btn" id="healthBtn" title="Memory health: counts, growth, superseded ratio, consolidation backlog">♡</button>
   <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
 </header>
 <div id="chips">
@@ -352,6 +363,10 @@
     <div class="lg-row"><span class="lg-glyph">◌</span>dashed outline = superseded (replaced by a newer memory)</div>
     <div class="lg-row"><span class="lg-glyph">⟋</span>edge = semantic similarity — darker means closer in meaning</div>
     <div class="lg-row"><span class="lg-glyph" style="color:var(--accent)">◌</span>dotted ring = same source session as the selected memory ("Re-tag whole session" moves these together)</div>
+  </div>
+  <div id="health">
+    <div class="hl-title">Memory health</div>
+    <div id="healthBody">Loading…</div>
   </div>
   <div id="tooltip"></div>
   <div id="list"></div>
@@ -1862,6 +1877,35 @@ $("homeTitle").onclick = () => {
 $("legendBtn").onclick = () => {
   const lg = $("legend");
   lg.style.display = lg.style.display === "block" ? "none" : "block";
+};
+async function renderHealth() {
+  const body = $("healthBody");
+  body.textContent = "Loading…";
+  let s;
+  try { s = await (await fetch("/memory/stats")).json(); }
+  catch { body.textContent = "Failed to load."; return; }
+  const total = s.total_active + s.total_superseded;
+  const row = (label, value) => `<div class="hl-row"><span>${label}</span><b>${value}</b></div>`;
+  const byList = (obj) => Object.entries(obj)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => row(escapeHtml(k), v)).join("") || `<div class="hl-sub">none</div>`;
+  body.innerHTML =
+    row("Active facts", s.total_active) +
+    row("Superseded", `${s.total_superseded} (${Math.round(s.superseded_ratio * 100)}%)`) +
+    row("New in 24h", s.new_last_24h) +
+    row("New in 7d", s.new_last_7d) +
+    row("Open tasks", s.open_tasks) +
+    row("Done tasks", s.done_tasks) +
+    row("Flagged conflicts", s.flagged_conflicts) +
+    row("Consolidation backlog", s.consolidation_backlog) +
+    `<div class="hl-sep"></div><div class="hl-sub">By type</div>` + byList(s.by_type) +
+    `<div class="hl-sep"></div><div class="hl-sub">By project</div>` + byList(s.by_project);
+}
+$("healthBtn").onclick = () => {
+  const hl = $("health");
+  const opening = hl.style.display !== "block";
+  hl.style.display = opening ? "block" : "none";
+  if (opening) renderHealth();
 };
 $("viewGraph").onclick = () => { $("list").style.display = "none"; setView("viewGraph"); };
 $("viewList").onclick = () => { renderList(); $("list").style.display = "block"; setView("viewList"); };

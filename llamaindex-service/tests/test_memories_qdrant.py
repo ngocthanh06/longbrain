@@ -579,6 +579,67 @@ def test_graph_data_excludes_superseded_by_default(client):
     assert sum(1 for n in g_all["nodes"] if n["superseded"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# health_stats: /ui dashboard aggregation
+# ---------------------------------------------------------------------------
+def test_health_stats_counts_by_type_and_project(client):
+    embed = FakeEmbed({
+        "fact one": _unit(0), "decision one": _unit(30), "fact two": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "fact one", "type": "fact"},
+        {"text": "decision one", "type": "decision"},
+    ], project_id="p1")
+    memories.save_facts(client, embed, [{"text": "fact two", "type": "fact"}], project_id="p2")
+
+    stats = memories.health_stats(client)
+    assert stats["by_type"] == {"fact": 2, "decision": 1}
+    assert stats["by_project"] == {"p1": 2, "p2": 1}
+    assert stats["total_active"] == 3
+    assert stats["total_superseded"] == 0
+    assert stats["superseded_ratio"] == 0.0
+
+
+def test_health_stats_superseded_ratio(client):
+    embed = FakeEmbed({
+        "old version": _unit(0),
+        "new version here": _unit(3),  # supersedes old
+    })
+    memories.save_facts(client, embed, [{"text": "old version"}])
+    memories.save_facts(client, embed, [{"text": "new version here"}])
+    stats = memories.health_stats(client)
+    assert stats["total_active"] == 1
+    assert stats["total_superseded"] == 1
+    assert stats["superseded_ratio"] == 0.5
+
+
+def test_health_stats_tracks_task_status_and_conflicts(client):
+    embed = FakeEmbed({
+        "ship it": _unit(80),
+        "prefers dark mode": _unit(0),
+        "now prefers light mode": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "ship it", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    memories.save_facts(client, embed, [{"text": "prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    memories.save_facts(client, embed, [{"text": "now prefers light mode"}], llm=llm)
+
+    stats = memories.health_stats(client)
+    assert stats["open_tasks"] == 0
+    assert stats["done_tasks"] == 1
+    assert stats["flagged_conflicts"] == 2  # both sides of the flagged pair
+
+
+def test_health_stats_excludes_session_summaries(client):
+    embed = FakeEmbed()
+    memories.save_session_summary(client, embed, "s1", "summary text")
+    stats = memories.health_stats(client)
+    assert stats["total_active"] == 0
+    assert stats["by_type"] == {}
+
+
 def test_session_project_sticky_to_founding_turn(client):
     embed = FakeEmbed()
     memory_store.add_message(client, embed, "s9", "user", "first turn", project_id="erp")
