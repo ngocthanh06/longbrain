@@ -1,9 +1,9 @@
 {
  "summary": {
   "include_hits": 12,
-  "include_expected": 12,
+  "include_expected": 13,
   "violations": 0,
-  "total_chars": 11316
+  "total_chars": 11531
  },
  "cases": [
   {
@@ -103,7 +103,7 @@
    ],
    "misses": [],
    "violations": [],
-   "chars": 736,
+   "chars": 679,
    "note": ""
   },
   {
@@ -125,6 +125,16 @@
    "violations": [],
    "chars": 139,
    "note": "triple supersession: the two seeded preferences share (user, package_manager) with different objects and texts far apart in cosine — without the triple path recall returns BOTH; gauge for TRIPLE_SUPERSEDE (reproduces the stale pnpm→bun failure)"
+  },
+  {
+   "name": "vn-multihop-project-deploy",
+   "hits": [],
+   "misses": [
+    "ap-northeast-1"
+   ],
+   "violations": [],
+   "chars": 272,
+   "note": "genuine 2-hop query: hop 1 (PostgreSQL -> shopmed) matches strongly on the exact token; hop 2 (shopmed -> AWS ECS Fargate/ap-northeast-1) shares no keywords with the query text at all, so dense+BM25 top-k can't bridge it without following the entity graph — gauge for whether KG-lite's entity graph (currently /ui-visualization-only, not wired into recall) is worth using for actual recall; expected to fail against the current pipeline"
   }
  ]
 }

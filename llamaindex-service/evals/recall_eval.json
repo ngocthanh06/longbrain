@@ -3,6 +3,7 @@
   "corpus": {
     "facts": [
       {"text": "Dự án shopmed dùng PostgreSQL với PostGIS làm database chính", "type": "fact", "project": "shopmed", "source_agent": "claude-code"},
+      {"text": "shopmed chạy trên AWS ECS Fargate, region ap-northeast-1", "type": "fact", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Dự án shopmed: mọi lệnh chạy trong Docker container, lint backend dùng phpcs chuẩn PSR12", "type": "fact", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Quyết định của dự án shopmed: đếm lượt sử dụng AI import tại thời điểm job hoàn thành, không phải lúc tạo job", "type": "decision", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Dự án bookinghub viết bằng Go theo clean architecture, 5 module: auth, booking, merchant, user, example", "type": "fact", "project": "bookinghub", "source_agent": "claude-code"},
@@ -119,6 +120,14 @@
       "expect_include": ["bun"],
       "expect_exclude": ["pnpm"],
       "note": "triple supersession: the two seeded preferences share (user, package_manager) with different objects and texts far apart in cosine — without the triple path recall returns BOTH; gauge for TRIPLE_SUPERSEDE (reproduces the stale pnpm→bun failure)"
+    },
+    {
+      "name": "vn-multihop-project-deploy",
+      "query": "dự án nào dùng PostgreSQL, và nó chạy ở đâu?",
+      "project": "",
+      "expect_include": ["ap-northeast-1"],
+      "expect_exclude": [],
+      "note": "genuine 2-hop query: hop 1 (PostgreSQL -> shopmed) matches strongly on the exact token; hop 2 (shopmed -> AWS ECS Fargate/ap-northeast-1) shares no keywords with the query text at all, so dense+BM25 top-k can't bridge it without following the entity graph — gauge for whether KG-lite's entity graph (currently /ui-visualization-only, not wired into recall) is worth using for actual recall; expected to fail against the current pipeline"
     }
   ]
 }
