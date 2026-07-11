@@ -109,6 +109,14 @@ HIDE_DONE_TASKS = os.getenv("HIDE_DONE_TASKS", "true").lower() == "true"
 # the existing dedup call only asks "same fact reworded?", never
 # "conflicting?". Flags both facts via conflicts_with; never auto-resolves.
 CONTRADICTION_DETECTION = os.getenv("CONTRADICTION_DETECTION", "true").lower() == "true"
+# Topic sub-clustering for the /ui galaxy: connected-components over the
+# similarity matrix graph_data() already computes (no new LLM calls, no new
+# payload field, no migration — computed fresh on every request). Stricter
+# than the edge-drawing threshold (0.35) because a "topic" needs tighter
+# cohesion than "merely related". Clusters of size 1 stay topic=None — the
+# graceful-degrade path for old data and for this flag being off.
+GRAPH_TOPIC_CLUSTERING = os.getenv("GRAPH_TOPIC_CLUSTERING", "true").lower() == "true"
+GRAPH_TOPIC_MIN_SIMILARITY = float(os.getenv("GRAPH_TOPIC_MIN_SIMILARITY", "0.55"))
 # Recall multiplier for same-project hits, applied on top of the scope rule:
 # when a project is known, auto-recall hard-scopes facts/history to that
 # project + the default project (preferences are global and always pass) —

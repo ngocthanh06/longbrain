@@ -352,7 +352,7 @@ def consolidate_pending(background_tasks: BackgroundTasks):
 @app.get("/memory/graph")
 def memory_graph(
     include_superseded: bool = False, top_edges: int = 4, min_similarity: float = 0.35,
-    mode: str = "facts",
+    mode: str = "facts", topic_min_similarity: float | None = None,
 ):
     """Facts as a similarity graph (nodes + edges) for the /ui browser.
     mode=entities returns the triple-based entity graph instead."""
@@ -363,6 +363,7 @@ def memory_graph(
         include_superseded=include_superseded,
         top_edges=top_edges,
         min_similarity=min_similarity,
+        topic_min_similarity=topic_min_similarity,
     )
 
 

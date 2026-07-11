@@ -327,6 +327,7 @@
   <button class="btn" id="legendBtn" title="What do the shapes and colors mean?">?</button>
   <button class="btn" id="healthBtn" title="Memory health: counts, growth, superseded ratio, consolidation backlog">♡</button>
   <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
+  <label class="toggle" title="Group each galaxy's memories by topic — same-project facts that cluster tightly by meaning"><input type="checkbox" id="topicNesting" checked> topics</label>
 </header>
 <div id="chips">
   <div class="filter-dd" id="projectDD">
@@ -461,6 +462,7 @@ let viewW = 0, viewH = 0;
 let visNodes = [], visEdges = [];
 let needsRender = true, hoverEasing = false;
 let edgeMin = 0.35, sameProjOnly = false;  // link display filters
+let topicNesting = true;  // nest same-topic nodes inside their galaxy (physics term in step())
 function invalidate() { needsRender = true; }
 
 function readCss() {
@@ -519,6 +521,19 @@ function galaxyRot(slug) { return (strHash(slug) % 1000) / 1000 * Math.PI * 2; }
 // Small per-galaxy drift speed (+ direction) for the ambient spiral-arm
 // rotation — a distinct hash seed so it doesn't correlate with galaxyRot.
 function galaxySpin(slug) { return ((strHash(slug + "_spin") % 1000) / 1000 - 0.5) * 0.36; }
+
+// Topic sub-clustering (server-computed connected-components, see
+// memories.graph_data): a small, deterministic offset from the node's own
+// galaxy center, keyed by topic id, so same-topic nodes gravitate toward a
+// shared point strictly inside their project's galaxy. Reuses the same
+// hash-based determinism as galaxyRot/galaxySpin rather than a separate
+// static layout pass — nodes are already under continuous force simulation,
+// so a second gravity term composes naturally with the existing one.
+function topicCenterOffset(topic, footprint) {
+  const a = (strHash(topic) % 1000) / 1000 * Math.PI * 2;
+  const r = Math.min(footprint * 0.5, 90);
+  return { dx: Math.cos(a) * r, dy: Math.sin(a) * r };
+}
 
 function layoutGalaxies(countsBySlug, slugs) {
   if (slugs.length <= 1) {
@@ -801,6 +816,16 @@ function step() {
     const center = projectCenter.get(n.project_id) || { x: 0, y: 0 };
     const g = 0.0016 + 0.0012 * (n.importance || 0.5);
     n.vx -= (n.x - center.x) * g * alpha; n.vy -= (n.y - center.y) * g * alpha;
+    if (topicNesting && n.topic) {
+      // A second, tighter gravity toward this topic's own point inside the
+      // galaxy — composes with the project-level pull above rather than
+      // replacing it, so topics nest inside galaxies instead of escaping them.
+      const gc = projectCenter.get(n.project_id);
+      const foot = gc ? gc.r : galaxyFootprint(1);
+      const off = topicCenterOffset(n.topic, foot);
+      const tx = center.x + off.dx, ty = center.y + off.dy;
+      n.vx -= (n.x - tx) * 0.004 * alpha; n.vy -= (n.y - ty) * 0.004 * alpha;
+    }
     if (dragging === n) { n.vx = n.vy = 0; continue; }
     n.x += n.vx; n.y += n.vy; n.vx *= 0.88; n.vy *= 0.88;
   }
@@ -1352,6 +1377,7 @@ function select(n, withRipple = true) {
     <tr><td>Status</td><td>${n.superseded ? "superseded" : "active"}</td></tr>
     ${n.type === "task" ? `<tr><td>Task</td><td>${n.status === "done" ? "✓ done" : "open"}</td></tr>` : ""}
     ${n.conflicts_with ? `<tr><td>⚠ Conflict</td><td><span class="conflict-link" data-id="${n.conflicts_with}" style="cursor:pointer;text-decoration:underline;color:var(--accent)">may contradict another memory — view</span></td></tr>` : ""}
+    ${n.topic ? `<tr><td>Topic</td><td>${nodes.filter(x => x.topic === n.topic).length} related by meaning</td></tr>` : ""}
     <tr><td>Links</td><td>${(edgesByNode.get(n.id) || []).length} related</td></tr>`;
   $("pLoadSession").style.display = n.session_id ? "" : "none";
   $("pRetagSession").style.display = n.session_id ? "" : "none";
@@ -1920,6 +1946,10 @@ function setView(id) {
   $("viewList").classList.toggle("active", id === "viewList");
 }
 $("showSuperseded").onchange = load;
+$("topicNesting").onchange = e => {
+  topicNesting = e.target.checked;
+  alpha = Math.max(alpha, .3);
+};
 $("edgeMin").oninput = e => {
   edgeMin = parseFloat(e.target.value);
   $("edgeMinVal").textContent = "≥ " + edgeMin.toFixed(2);

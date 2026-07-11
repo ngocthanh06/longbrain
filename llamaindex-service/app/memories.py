@@ -778,6 +778,7 @@ def entity_graph_data(client: QdrantClient, user_id: str = config.USER_ID) -> di
             "session_id": "",
             "superseded": False,
             "source_agent": "",
+            "topic": None,
         }
         for name in degree
     ]
@@ -816,6 +817,39 @@ def delete_all_facts(client: QdrantClient, user_id: str = config.USER_ID) -> int
     return count
 
 
+def _cluster_topics(nodes: list[dict], sims, threshold: float) -> None:
+    """Connected-components over `sims`, scoped to same-project pairs above
+    `threshold`. Writes nodes[i]["topic"] in place; clusters of size < 2
+    keep topic=None (nothing to group). Stable ordering (by descending
+    cluster size, tie-broken by the cluster's smallest node id) so reloads
+    don't reshuffle which cluster is "t0" vs "t1"."""
+    n = len(nodes)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if nodes[i]["project_id"] == nodes[j]["project_id"] and sims[i][j] >= threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    clusters = [members for members in groups.values() if len(members) >= 2]
+    clusters.sort(key=lambda members: (-len(members), nodes[members[0]]["id"]))
+    for rank, members in enumerate(clusters):
+        topic_id = f"{nodes[members[0]]['project_id']}::t{rank}"
+        for idx in members:
+            nodes[idx]["topic"] = topic_id
+
+
 def graph_data(
     client: QdrantClient,
     user_id: str = config.USER_ID,
@@ -823,6 +857,7 @@ def graph_data(
     top_edges: int = 4,
     min_similarity: float = 0.35,
     limit: int = 2000,
+    topic_min_similarity: float | None = None,
 ) -> dict:
     """Nodes + similarity edges over the fact collection, for the /ui graph.
 
@@ -869,6 +904,7 @@ def graph_data(
             "status": p.payload.get("status"),
             "conflicts_with": p.payload.get("conflicts_with"),
             "source_agent": p.payload.get("source_agent") or "",
+            "topic": None,
         }
         for p in points
     ]
@@ -905,6 +941,14 @@ def graph_data(
                          "weight": round(float(sims[i][j]), 4)}
                     )
                 kept += 1
+
+        if config.GRAPH_TOPIC_CLUSTERING:
+            _cluster_topics(
+                nodes, sims,
+                topic_min_similarity
+                if topic_min_similarity is not None
+                else config.GRAPH_TOPIC_MIN_SIMILARITY,
+            )
 
     return {"nodes": nodes, "edges": edges}
 

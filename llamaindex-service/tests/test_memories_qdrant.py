@@ -580,6 +580,56 @@ def test_graph_data_excludes_superseded_by_default(client):
 
 
 # ---------------------------------------------------------------------------
+# graph_data: topic sub-clustering (connected-components over similarity,
+# no LLM, no new payload field — see config.GRAPH_TOPIC_CLUSTERING)
+# ---------------------------------------------------------------------------
+def test_graph_data_clusters_similar_facts_same_topic(client):
+    embed = FakeEmbed({
+        "fact A": _unit(0),
+        "fact B": _unit(30),  # cos(30°)≈0.87: above GRAPH_TOPIC_MIN_SIMILARITY
+                               # (0.55), below SUPERSEDE_SIMILARITY (0.92)
+        "fact C": _unit(90),  # cos(90°)=0: below threshold, no cluster
+    })
+    memories.save_facts(
+        client, embed,
+        [{"text": "fact A"}, {"text": "fact B"}, {"text": "fact C"}],
+        project_id="p1",
+    )
+    g = memories.graph_data(client)
+    topics = {n["text"]: n["topic"] for n in g["nodes"]}
+    assert topics["fact A"] == topics["fact B"]
+    assert topics["fact A"] is not None
+    assert topics["fact C"] is None
+
+
+def test_graph_data_topic_scoped_to_project(client):
+    embed = FakeEmbed({"fact A": _unit(0), "fact B": _unit(30)})
+    memories.save_facts(client, embed, [{"text": "fact A"}], project_id="p1")
+    memories.save_facts(client, embed, [{"text": "fact B"}], project_id="p2")
+    g = memories.graph_data(client)
+    topics = {n["text"]: n["topic"] for n in g["nodes"]}
+    assert topics["fact A"] is None
+    assert topics["fact B"] is None
+
+
+def test_graph_data_topic_clustering_disabled_via_config(client, monkeypatch):
+    monkeypatch.setattr(config, "GRAPH_TOPIC_CLUSTERING", False)
+    embed = FakeEmbed({"fact A": _unit(0), "fact B": _unit(30)})
+    memories.save_facts(
+        client, embed, [{"text": "fact A"}, {"text": "fact B"}], project_id="p1"
+    )
+    g = memories.graph_data(client)
+    assert all(n["topic"] is None for n in g["nodes"])
+
+
+def test_graph_data_singleton_has_no_topic(client):
+    embed = FakeEmbed({"lonely fact": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "lonely fact"}], project_id="p1")
+    g = memories.graph_data(client)
+    assert g["nodes"][0]["topic"] is None
+
+
+# ---------------------------------------------------------------------------
 # health_stats: /ui dashboard aggregation
 # ---------------------------------------------------------------------------
 def test_health_stats_counts_by_type_and_project(client):
