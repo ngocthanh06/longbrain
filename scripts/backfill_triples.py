@@ -139,17 +139,20 @@ def extract_pass(client: QdrantClient, llm) -> dict[str, tuple]:
 
 def _covisible_buckets(group: list) -> list[list]:
     """Split a (user, subject, relation) group by recall co-visibility:
-    preferences are global; other facts see their own project + default."""
+    preferences are global — save-time supersession (memories.py's should
+    filter: project match OR type=preference) lets them compete with every
+    project's facts, so they're folded into each per-project/default bucket
+    rather than judged only among themselves."""
     prefs = [p for p in group if p.payload.get("type") == "preference"]
     rest = [p for p in group if p.payload.get("type") != "preference"]
     default = [p for p in rest if p.payload.get("project_id") == config.DEFAULT_PROJECT]
-    projects = {p.payload.get("project_id") for p in rest} - {config.DEFAULT_PROJECT}
-    buckets = [prefs] if len(prefs) > 1 else []
-    for proj in sorted(projects):
-        buckets.append([p for p in rest if p.payload.get("project_id") == proj] + default)
-    if not projects and len(default) > 1:
-        buckets.append(default)
-    return buckets
+    projects = sorted({p.payload.get("project_id") for p in rest} - {config.DEFAULT_PROJECT})
+    if not projects:
+        return [default + prefs]
+    return [
+        [p for p in rest if p.payload.get("project_id") == proj] + default + prefs
+        for proj in projects
+    ]
 
 
 def supersede_pass(client: QdrantClient, planned: dict[str, tuple]) -> list[tuple]:
@@ -217,16 +220,22 @@ def apply_plan(client: QdrantClient, plan: dict) -> None:
     retired = 0
     for old_id, new_id in plan.get("supersedes", []):
         existing = client.retrieve(
-            collection_name=config.MEMORIES_COLLECTION, ids=[old_id], with_payload=True
+            collection_name=config.MEMORIES_COLLECTION, ids=[old_id, new_id], with_payload=True
         )
-        if not existing or existing[0].payload.get("superseded_by"):
+        by_id = {str(p.id): p for p in existing}
+        old_point, new_point = by_id.get(old_id), by_id.get(new_id)
+        if not old_point or old_point.payload.get("superseded_by"):
+            continue
+        # The target may have been deleted or itself superseded between the
+        # plan run and --apply — only retire old_id into a still-active target.
+        if not new_point or new_point.payload.get("superseded_by"):
             continue
         client.set_payload(
             collection_name=config.MEMORIES_COLLECTION,
             payload={"superseded_by": new_id},
             points=[old_id],
         )
-        print(f"  retired: {existing[0].payload.get('text', '')[:80]}")
+        print(f"  retired: {old_point.payload.get('text', '')[:80]}")
         retired += 1
     print(f"Pass 2: {retired} stale fact(s) retired")
 

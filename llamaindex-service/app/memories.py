@@ -193,6 +193,7 @@ def save_facts(
         # co-appeared with it — same project or the default project, plus
         # preferences, which are global in recall.
         superseded = []
+        superseded_ids = []
         triple = _triple_of(fact) if config.TRIPLE_SUPERSEDE else None
         if triple:
             candidates, _ = client.scroll(
@@ -228,11 +229,7 @@ def save_facts(
             for cand in candidates:
                 if str(cand.id) == point_id:
                     continue
-                client.set_payload(
-                    collection_name=config.MEMORIES_COLLECTION,
-                    payload={"superseded_by": point_id},
-                    points=[cand.id],
-                )
+                superseded_ids.append(cand.id)
                 superseded.append(cand.payload.get("text", ""))
 
         # A near-identical active fact gets superseded (updated info wins).
@@ -262,11 +259,7 @@ def save_facts(
                 llm is not None and _llm_confirms_duplicate(llm, text, hit.payload.get("text", ""))
             )
             if is_dup:
-                client.set_payload(
-                    collection_name=config.MEMORIES_COLLECTION,
-                    payload={"superseded_by": point_id},
-                    points=[hit.id],
-                )
+                superseded_ids.append(hit.id)
                 superseded.append(hit.payload.get("text", ""))
             elif best_relevant is None:
                 best_relevant = hit
@@ -285,11 +278,6 @@ def save_facts(
             and _llm_flags_contradiction(llm, text, best_relevant.payload.get("text", ""))
         ):
             contradicts_id = str(best_relevant.id)
-            client.set_payload(
-                collection_name=config.MEMORIES_COLLECTION,
-                payload={"conflicts_with": point_id},
-                points=[best_relevant.id],
-            )
 
         now = time.time()
         payload = {
@@ -318,6 +306,21 @@ def save_facts(
                 payload=payload,
             )],
         )
+        # Old facts are only marked superseded/conflicting AFTER the new fact
+        # lands: if the upsert above had failed, doing this first would drop
+        # the old facts from recall while the replacement never existed.
+        if superseded_ids:
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"superseded_by": point_id},
+                points=superseded_ids,
+            )
+        if contradicts_id:
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"conflicts_with": point_id},
+                points=[contradicts_id],
+            )
         results.append(
             {"text": text, "status": "supersedes" if superseded else "new",
              **({"superseded": superseded} if superseded else {}),
