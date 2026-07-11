@@ -308,6 +308,7 @@
   <button id="searchBtn"><span>🔍</span> Search memories… <kbd>⌘K</kbd></button>
   <button class="btn active" id="viewGraph">Graph</button>
   <button class="btn" id="viewList">List</button>
+  <button class="btn" id="viewEntities" title="Entity graph built from memory triples — who/what relates to what">Entities</button>
   <button class="btn" id="fitBtn" title="Fit graph to window">Fit</button>
   <button class="btn" id="exportBtn" title="Export current view as PNG">PNG</button>
   <button class="btn" id="bundleExportBtn" title="Download all memory as a JSON bundle — for moving to another machine">⇩ Export</button>
@@ -560,9 +561,10 @@ function rebuildVisible() {
 }
 
 // -------------------------------------------------------------------- data
+let graphMode = "facts";  // "entities" = triple-based entity graph
 async function load() {
   const inc = $("showSuperseded").checked;
-  const data = await (await fetch(`/memory/graph?include_superseded=${inc}`)).json();
+  const data = await (await fetch(`/memory/graph?include_superseded=${inc}&mode=${graphMode}`)).json();
   const old = new Map(nodes.map(n => [n.id, n]));
 
   // Galaxy centers must exist before nodes are placed, so a brand-new memory
@@ -1098,6 +1100,14 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(x1, y1);
     ctx.quadraticCurveTo(mx - dy / d * off, my + dx / d * off, x2, y2);
     ctx.stroke();
+    // entity mode: relation name at the edge midpoint
+    if (e.label) {
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.fillStyle = active ? css["--accent"] : css["--text-muted"];
+      ctx.textAlign = "center";
+      ctx.fillText(e.label, mx, my - 5);
+      ctx.textAlign = "left";
+    }
   }
   ctx.globalAlpha = 1;
 
@@ -1837,6 +1847,12 @@ $("legendBtn").onclick = () => {
 };
 $("viewGraph").onclick = () => { $("list").style.display = "none"; setView("viewGraph"); };
 $("viewList").onclick = () => { renderList(); $("list").style.display = "block"; setView("viewList"); };
+$("viewEntities").onclick = () => {
+  graphMode = graphMode === "entities" ? "facts" : "entities";
+  $("viewEntities").classList.toggle("active", graphMode === "entities");
+  $("list").style.display = "none"; setView("viewGraph");
+  load();
+};
 function setView(id) {
   $("viewGraph").classList.toggle("active", id === "viewGraph");
   $("viewList").classList.toggle("active", id === "viewList");

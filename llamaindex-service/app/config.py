@@ -58,7 +58,7 @@ USER_ID = os.getenv("LONGBRAIN_USER_ID") or os.getenv("HERMES_USER_ID", "local")
 # project from the turn's cwd; anything unmatched lands in "default".
 DEFAULT_PROJECT = "default"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ---------------------------------------------------------------------------
 # Memory behaviour
@@ -84,6 +84,13 @@ SUPERSEDE_SIMILARITY = float(os.getenv("SUPERSEDE_SIMILARITY", "0.92"))
 # merging unrelated same-topic facts. Only checked when an LLM is configured
 # (LLM_PROVIDER=none skips this band and falls back to threshold-only).
 DEDUP_LLM_CHECK_MIN = float(os.getenv("DEDUP_LLM_CHECK_MIN", "0.60"))
+# Triple-based supersession: facts may carry a (subject, relation, object)
+# triple extracted during consolidation. A new fact with the same
+# subject+relation as an active one retires it, catching CONTRADICTIONS
+# ("uses pnpm" -> "switched to bun") that both cosine bands miss: the texts
+# score far below SUPERSEDE_SIMILARITY, and the LLM band only detects
+# rewordings — and never runs at save time under LLM_PROVIDER=none.
+TRIPLE_SUPERSEDE = os.getenv("TRIPLE_SUPERSEDE", "true").lower() == "true"
 # Recall multiplier for same-project hits, applied on top of the scope rule:
 # when a project is known, auto-recall hard-scopes facts/history to that
 # project + the default project (preferences are global and always pass) —

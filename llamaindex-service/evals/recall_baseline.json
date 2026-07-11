@@ -1,9 +1,9 @@
 {
  "summary": {
-  "include_hits": 11,
-  "include_expected": 11,
+  "include_hits": 12,
+  "include_expected": 12,
   "violations": 0,
-  "total_chars": 11177
+  "total_chars": 11316
  },
  "cases": [
   {
@@ -115,6 +115,16 @@
    "violations": [],
    "chars": 1151,
    "note": "a standing-convention preference (4 days old, default importance) must win the top-k race against fresh same-topic status facts at the moment of ACTING — gauge for RECALL_PREFERENCE_BOOST; reproduces the real 2026-07-10 failure (Co-Authored-By trailer added even though the preference was saved)"
+  },
+  {
+   "name": "vn-stale-fact-superseded",
+   "hits": [
+    "bun"
+   ],
+   "misses": [],
+   "violations": [],
+   "chars": 139,
+   "note": "triple supersession: the two seeded preferences share (user, package_manager) with different objects and texts far apart in cosine — without the triple path recall returns BOTH; gauge for TRIPLE_SUPERSEDE (reproduces the stale pnpm→bun failure)"
   }
  ]
 }

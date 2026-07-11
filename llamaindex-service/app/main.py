@@ -119,6 +119,10 @@ class FactIn(BaseModel):
     text: str
     type: str = "fact"
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Optional supersession triple — see memories._triple_of.
+    subject: str = ""
+    relation: str = ""
+    object: str = ""
 
 
 class SaveFactsRequest(BaseModel):
@@ -347,9 +351,13 @@ def consolidate_pending(background_tasks: BackgroundTasks):
 
 @app.get("/memory/graph")
 def memory_graph(
-    include_superseded: bool = False, top_edges: int = 4, min_similarity: float = 0.35
+    include_superseded: bool = False, top_edges: int = 4, min_similarity: float = 0.35,
+    mode: str = "facts",
 ):
-    """Facts as a similarity graph (nodes + edges) for the /ui browser."""
+    """Facts as a similarity graph (nodes + edges) for the /ui browser.
+    mode=entities returns the triple-based entity graph instead."""
+    if mode == "entities":
+        return memories.entity_graph_data(state["qdrant_client"])
     return memories.graph_data(
         state["qdrant_client"],
         include_superseded=include_superseded,

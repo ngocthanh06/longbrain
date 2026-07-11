@@ -13,7 +13,9 @@
       {"text": "Quyết định shopmed: mỗi đợt thay đổi được chia thành nhiều commit theo từng nhóm concern riêng biệt", "type": "decision", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
       {"text": "Roadmap shopmed sau đợt commit refactor: việc tiếp theo là đặt tên tường minh cho volume dữ liệu rồi cập nhật bộ nhớ dự án", "type": "task", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
       {"text": "Người dùng thích giao diện cuộn chuột mượt và hiệu ứng zoom khi lọc dữ liệu", "type": "preference", "project": "default", "source_agent": "hermes"},
-      {"text": "Người dùng muốn mọi comment trong code viết bằng tiếng Anh", "type": "preference", "project": "default", "source_agent": "claude-code"}
+      {"text": "Người dùng muốn mọi comment trong code viết bằng tiếng Anh", "type": "preference", "project": "default", "source_agent": "claude-code"},
+      {"text": "Người dùng cài dependency và chạy script bằng pnpm cho mọi dự án", "type": "preference", "project": "default", "source_agent": "claude-code", "age_days": 60, "subject": "user", "relation": "package_manager", "object": "pnpm"},
+      {"text": "Người dùng đã chuyển hẳn sang bun, từ giờ cài đặt lẫn chạy script đều dùng bun", "type": "preference", "project": "default", "source_agent": "claude-code", "age_days": 40, "subject": "user", "relation": "package_manager", "object": "bun"}
     ],
     "history": [
       {"session": "s-review-1", "project": "shopmed", "role": "user", "content": "review giúp tôi 2 commit mới về tính năng giới hạn lượt dùng AI import"},
@@ -109,6 +111,14 @@
       "expect_include": ["Co-Authored-By"],
       "expect_exclude": [],
       "note": "a standing-convention preference (4 days old, default importance) must win the top-k race against fresh same-topic status facts at the moment of ACTING — gauge for RECALL_PREFERENCE_BOOST; reproduces the real 2026-07-10 failure (Co-Authored-By trailer added even though the preference was saved)"
+    },
+    {
+      "name": "vn-stale-fact-superseded",
+      "query": "tôi dùng gì để cài dependency và chạy script?",
+      "project": "shopmed",
+      "expect_include": ["bun"],
+      "expect_exclude": ["pnpm"],
+      "note": "triple supersession: the two seeded preferences share (user, package_manager) with different objects and texts far apart in cosine — without the triple path recall returns BOTH; gauge for TRIPLE_SUPERSEDE (reproduces the stale pnpm→bun failure)"
     }
   ]
 }

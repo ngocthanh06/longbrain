@@ -13,6 +13,29 @@ from qdrant_client import QdrantClient
 
 from app import config, memories, memory_store
 
+# (subject, relation, object) triples let a newer fact supersede a stale one
+# at save time (same subject+relation, different object — see
+# memories.save_facts). The vocabulary text is shared with
+# scripts/backfill_triples.py so prompt and backfill can't drift.
+TRIPLE_VOCABULARY = (
+    '"relation" must be a snake_case attribute holding exactly ONE current '
+    "value for its subject — reuse one of: package_manager, database, "
+    "primary_language, framework, editor, timezone, employer, role, "
+    "deadline, status, comment_language, commit_style — or invent a new one "
+    "in the same style. If several values can be true at once (e.g. things "
+    "the user likes), omit the triple entirely."
+)
+
+_TRIPLE_SECTION = f"""
+When a fact states the CURRENT value of a single-valued attribute, add
+"subject", "relation" and "object" keys next to "text" so a newer value can
+supersede the stored one (example: "Switched the project to bun" gives
+"subject": "user", "relation": "package_manager", "object": "bun").
+{TRIPLE_VOCABULARY}
+All three keys are OPTIONAL — omit them when no single-valued attribute
+applies.
+"""
+
 EXTRACTION_INSTRUCTIONS = """\
 You are a long-term memory curator. From the transcript, extract ONLY facts
 that will still be useful in FUTURE conversations:
@@ -53,9 +76,14 @@ conversation, covering (a) what the session was trying to achieve, (b) the
 key decisions or outcomes, and (c) anything left unresolved. It is shown
 when future conversations reference this session, so keep it self-contained.
 For sessions with no real content, use an empty string.
-
-Return ONLY a JSON object (no prose, no code fences):
-{{"facts": [{{"text": "...", "type": "fact|preference|decision|task", "importance": 0.0-1.0}}], "summary": "..."}}"""
+%(triple_section)sReturn ONLY a JSON object (no prose, no code fences):
+{{"facts": [{{"text": "...", "type": "fact|preference|decision|task", "importance": 0.0-1.0%(triple_keys)s}}], "summary": "..."}}""" % {
+    # %-substituted once at import so the {max_facts} .format() placeholder
+    # and the {{ }} JSON braces stay untouched.
+    "triple_section": _TRIPLE_SECTION if config.TRIPLE_SUPERSEDE else "\n",
+    "triple_keys": ', "subject": "...", "relation": "...", "object": "..."'
+    if config.TRIPLE_SUPERSEDE else "",
+}
 
 
 MAX_TRANSCRIPT_CHARS = 12000  # keep extraction prompts fast; newest turns win

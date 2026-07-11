@@ -108,6 +108,176 @@ def test_save_facts_without_llm_skips_dedup_band(client):
 
 
 # ---------------------------------------------------------------------------
+# save_facts: triple-based supersession — contradictions the cosine bands
+# miss (same subject+relation, different object). Vectors are kept 60° apart
+# (cos ≈ 0.5 < DEDUP_LLM_CHECK_MIN) so the cosine paths provably never fire.
+# ---------------------------------------------------------------------------
+def test_triple_supersedes_contradiction(client):
+    embed = FakeEmbed({
+        "User uses pnpm as package manager": _unit(0),
+        "User switched the whole stack over to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "User uses pnpm as package manager",
+         "subject": "user", "relation": "package_manager", "object": "pnpm"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User switched the whole stack over to bun",
+         "subject": "user", "relation": "package_manager", "object": "bun"},
+    ])
+    assert r[0]["status"] == "supersedes"
+    assert r[0]["superseded"] == ["User uses pnpm as package manager"]
+
+    hits = memories.search_memories(client, embed, "User uses pnpm as package manager", top_k=5)
+    texts = [h["text"] for h in hits]
+    assert "User switched the whole stack over to bun" in texts
+    assert "User uses pnpm as package manager" not in texts
+
+
+def test_triple_same_object_supersedes_and_keeps_provenance(client):
+    embed = FakeEmbed({
+        "Primary language is Go": _unit(0),
+        "User confirmed Go stays the primary language": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Primary language is Go",
+         "subject": "user", "relation": "primary_language", "object": "go"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User confirmed Go stays the primary language",
+         "subject": "user", "relation": "primary_language", "object": "go"},
+    ])
+    assert r[0]["status"] == "supersedes"
+    old_id = memories.fact_point_id(
+        config.USER_ID, "Primary language is Go", config.DEFAULT_PROJECT
+    )
+    old = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION, ids=[old_id], with_payload=True
+    )[0]
+    assert old.payload["superseded_by"]
+
+
+def test_triple_garbage_never_fails_the_save(client):
+    embed = FakeEmbed({"fact a": _unit(0), "fact b": _unit(60), "fact c": _unit(120)})
+    r = memories.save_facts(client, embed, [
+        {"text": "fact a", "subject": "user"},  # missing keys
+        {"text": "fact b", "subject": 42, "relation": "x", "object": "y"},  # non-string
+        {"text": "fact c", "subject": "  ", "relation": "x", "object": "y"},  # empty after norm
+    ])
+    assert [x["status"] for x in r] == ["new", "new", "new"]
+    b = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION,
+        ids=[memories.fact_point_id(config.USER_ID, "fact b", config.DEFAULT_PROJECT)],
+        with_payload=True,
+    )[0]
+    assert "triple_subject" not in b.payload
+
+
+def test_triple_matching_is_normalized(client):
+    embed = FakeEmbed({
+        "Package manager is pnpm": _unit(0),
+        "Moved everything to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Package manager is pnpm",
+         "subject": "user", "relation": "package_manager", "object": "pnpm"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "Moved everything to bun",
+         "subject": " The User ", "relation": "Package Manager", "object": "Bun"},
+    ])
+    assert r[0]["status"] == "supersedes"
+
+
+def test_triple_not_superseded_across_plain_projects(client):
+    # Non-preference facts in another (non-default) project can never
+    # co-appear in recall with the new fact, so they must not be retired.
+    embed = FakeEmbed({
+        "Alpha uses MySQL": _unit(0),
+        "Alpha uses PostgreSQL per beta's notes": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Alpha uses MySQL",
+         "subject": "alpha", "relation": "database", "object": "mysql"},
+    ], project_id="alpha")
+    r = memories.save_facts(client, embed, [
+        {"text": "Alpha uses PostgreSQL per beta's notes",
+         "subject": "alpha", "relation": "database", "object": "postgres"},
+    ], project_id="beta")
+    assert r[0]["status"] == "new"
+
+
+def test_triple_preference_superseded_globally(client):
+    # Preferences are global in recall, so a stale one must be reachable
+    # from any project.
+    embed = FakeEmbed({
+        "Comments in Vietnamese": _unit(0),
+        "Comments in English from now on": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Comments in Vietnamese", "type": "preference",
+         "subject": "user", "relation": "comment_language", "object": "vi"},
+    ], project_id="beta")
+    r = memories.save_facts(client, embed, [
+        {"text": "Comments in English from now on", "type": "preference",
+         "subject": "user", "relation": "comment_language", "object": "en"},
+    ], project_id="alpha")
+    assert r[0]["status"] == "supersedes"
+
+
+def test_triple_default_project_superseded_from_any_project(client):
+    embed = FakeEmbed({
+        "Editor is vim": _unit(0),
+        "Editor is now zed": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Editor is vim",
+         "subject": "user", "relation": "editor", "object": "vim"},
+    ])  # default project
+    r = memories.save_facts(client, embed, [
+        {"text": "Editor is now zed",
+         "subject": "user", "relation": "editor", "object": "zed"},
+    ], project_id="alpha")
+    assert r[0]["status"] == "supersedes"
+
+
+def test_triple_supersede_disabled_by_flag(client, monkeypatch):
+    monkeypatch.setattr(config, "TRIPLE_SUPERSEDE", False)
+    embed = FakeEmbed({
+        "User uses pnpm as package manager": _unit(0),
+        "User switched the whole stack over to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "User uses pnpm as package manager",
+         "subject": "user", "relation": "package_manager", "object": "pnpm"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User switched the whole stack over to bun",
+         "subject": "user", "relation": "package_manager", "object": "bun"},
+    ])
+    assert r[0]["status"] == "new"
+
+
+def test_triple_leaves_legacy_facts_alone(client):
+    # A legacy fact saved without a triple has no matching key — the new
+    # triple-bearing fact must not touch it (cosine fallback still governs).
+    embed = FakeEmbed({
+        "User uses pnpm as package manager": _unit(0),
+        "User switched the whole stack over to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "User uses pnpm as package manager"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User switched the whole stack over to bun",
+         "subject": "user", "relation": "package_manager", "object": "bun"},
+    ])
+    assert r[0]["status"] == "new"
+    hits = memories.search_memories(client, embed, "User uses pnpm as package manager", top_k=5)
+    assert "User uses pnpm as package manager" in [h["text"] for h in hits]
+
+
+# ---------------------------------------------------------------------------
 # save_facts: meta-about-the-assistant filter (belt and braces on the
 # consolidation prompt's own exclusion rule)
 # ---------------------------------------------------------------------------

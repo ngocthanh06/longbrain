@@ -114,6 +114,18 @@ def test_instructions_mark_transcript_as_data():
     assert "summary" in text.lower()
 
 
+def test_parse_extraction_preserves_triple_keys():
+    raw = '{"facts": [{"text": "t", "subject": "user", "relation": "editor", "object": "vim"}], "summary": ""}'
+    fact = _parse_extraction(raw)["facts"][0]
+    assert (fact["subject"], fact["relation"], fact["object"]) == ("user", "editor", "vim")
+
+
+def test_instructions_include_triple_contract():
+    text = consolidation.EXTRACTION_INSTRUCTIONS.format(max_facts=5)
+    assert "package_manager" in text  # vocabulary present
+    assert '"subject": "..."' in text  # schema line extended
+
+
 # ---------------------------------------------------------------------------
 # transcript truncation: newest turns win, marker prepended
 # ---------------------------------------------------------------------------

@@ -59,6 +59,35 @@ def summary_point_id(user_id: str, session_id: str) -> str:
     return str(uuid.uuid5(_NAMESPACE, f"summary:{user_id}:{session_id}"))
 
 
+def _norm_key(s: str, as_relation: bool = False) -> str:
+    """Normalize a triple part into a matching key: matching is exact-string,
+    so casing/spacing/punctuation noise from the extracting LLM must not
+    break it. Relations become snake_case; subjects drop a leading article."""
+    s = " ".join(s.split()).casefold().rstrip(".,;:!?")
+    if as_relation:
+        s = re.sub(r"[\s\-]+", "_", s)
+    else:
+        s = re.sub(r"^(the|an|a)\s+", "", s)
+    return s
+
+
+def _triple_of(fact: dict) -> tuple[str, str, str] | None:
+    """Validated, normalized (subject, relation, object) from a fact dict.
+    The extracting LLM may emit anything here — a bad triple must never fail
+    the save, so any non-string, empty-after-normalization or oversized part
+    drops the whole triple while the fact itself is kept."""
+    parts = (fact.get("subject"), fact.get("relation"), fact.get("object"))
+    if not all(isinstance(p, str) for p in parts):
+        return None
+    subject, obj = _norm_key(parts[0]), _norm_key(parts[2])
+    relation = _norm_key(parts[1], as_relation=True)
+    if not (subject and relation and obj):
+        return None
+    if any(len(p) > 128 for p in (subject, relation, obj)):
+        return None
+    return subject, relation, obj
+
+
 def _active_filter(user_id: str, extra: list | None = None) -> qmodels.Filter:
     must = [
         qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
@@ -131,6 +160,58 @@ def save_facts(
 
         vector = embed_model.get_text_embedding(text)
 
+        # Triple-based supersession: same (subject, relation) with a different
+        # object is a CONTRADICTION ("uses pnpm" -> "switched to bun") that
+        # both cosine bands below miss — the texts score far apart, and the
+        # LLM band only detects rewordings. Same object supersedes too: a
+        # reconfirmed fact gets a fresh created_at instead of decaying from
+        # its original date. Scope mirrors recall co-visibility
+        # (search_memories): a fact may only retire what could have
+        # co-appeared with it — same project or the default project, plus
+        # preferences, which are global in recall.
+        superseded = []
+        triple = _triple_of(fact) if config.TRIPLE_SUPERSEDE else None
+        if triple:
+            candidates, _ = client.scroll(
+                collection_name=config.MEMORIES_COLLECTION,
+                scroll_filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="user_id", match=qmodels.MatchValue(value=user_id)
+                        ),
+                        qmodels.IsEmptyCondition(
+                            is_empty=qmodels.PayloadField(key="superseded_by")
+                        ),
+                        qmodels.FieldCondition(
+                            key="triple_subject", match=qmodels.MatchValue(value=triple[0])
+                        ),
+                        qmodels.FieldCondition(
+                            key="triple_relation", match=qmodels.MatchValue(value=triple[1])
+                        ),
+                    ],
+                    should=[
+                        qmodels.FieldCondition(
+                            key="project_id",
+                            match=qmodels.MatchAny(any=[project_id, config.DEFAULT_PROJECT]),
+                        ),
+                        qmodels.FieldCondition(
+                            key="type", match=qmodels.MatchValue(value="preference")
+                        ),
+                    ],
+                ),
+                limit=16,
+                with_payload=["text"],
+            )
+            for cand in candidates:
+                if str(cand.id) == point_id:
+                    continue
+                client.set_payload(
+                    collection_name=config.MEMORIES_COLLECTION,
+                    payload={"superseded_by": point_id},
+                    points=[cand.id],
+                )
+                superseded.append(cand.payload.get("text", ""))
+
         # A near-identical active fact gets superseded (updated info wins).
         # Two bands: >=SUPERSEDE_SIMILARITY is close enough to auto-supersede
         # (near-exact text); the wider DEDUP_LLM_CHECK_MIN..SUPERSEDE_SIMILARITY
@@ -140,7 +221,6 @@ def save_facts(
         # Scope the supersede search to this fact's project: near-identical
         # facts in DIFFERENT projects are distinct knowledge, and letting one
         # retire the other silently loses the other project's memory.
-        superseded = []
         hits = client.search(
             collection_name=config.MEMORIES_COLLECTION,
             query_vector=vector,
@@ -177,6 +257,10 @@ def save_facts(
         }
         if source_agent:
             payload["source_agent"] = source_agent
+        if triple:
+            payload["triple_subject"] = triple[0]
+            payload["triple_relation"] = triple[1]
+            payload["triple_object"] = triple[2]
         client.upsert(
             collection_name=config.MEMORIES_COLLECTION,
             points=[qmodels.PointStruct(
@@ -466,6 +550,67 @@ def set_session_facts_project(
             points=qmodels.FilterSelector(filter=flt),
         )
     return count
+
+
+def entity_graph_data(client: QdrantClient, user_id: str = config.USER_ID) -> dict:
+    """Entities and relations from fact triples, for the /ui graph's entity
+    mode. Nodes are the distinct subjects/objects of active triple-bearing
+    facts; each fact contributes one labelled edge. Node shape matches
+    graph_data so the Canvas renderer needs no new code."""
+    from collections import Counter
+
+    flt = qmodels.Filter(
+        must=[
+            qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")),
+        ],
+        must_not=[
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="triple_subject")),
+        ],
+    )
+    points, offset = [], None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=config.MEMORIES_COLLECTION, scroll_filter=flt,
+            limit=256, offset=offset, with_payload=True,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    degree: Counter = Counter()
+    projects: dict[str, Counter] = {}
+    edges = []
+    for p in points:
+        subject = p.payload.get("triple_subject", "")
+        obj = p.payload.get("triple_object", "")
+        project = p.payload.get("project_id") or config.DEFAULT_PROJECT
+        edges.append({
+            "source": f"ent:{subject}",
+            "target": f"ent:{obj}",
+            "weight": 0.8,
+            "label": p.payload.get("triple_relation", ""),
+            "fact_id": str(p.id),
+        })
+        for name in (subject, obj):
+            degree[name] += 1
+            projects.setdefault(name, Counter())[project] += 1
+
+    nodes = [
+        {
+            "id": f"ent:{name}",
+            "text": name,
+            "type": "entity",
+            "project_id": projects[name].most_common(1)[0][0],
+            "importance": min(1.0, degree[name] / 5),
+            "created_at": None,
+            "session_id": "",
+            "superseded": False,
+            "source_agent": "",
+        }
+        for name in degree
+    ]
+    return {"nodes": nodes, "edges": edges}
 
 
 def delete_fact(client: QdrantClient, fact_id: str) -> bool:
