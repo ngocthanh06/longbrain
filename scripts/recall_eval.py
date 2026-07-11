@@ -55,12 +55,16 @@ def seed(client: QdrantClient, embed, index, corpus: dict) -> None:
             project_id=f.get("project", ""), source_agent=f.get("source_agent", ""),
         )
         if f.get("age_days"):
-            # Backdate created_at so cases can stage the top-k race between
-            # an old standing preference and fresh same-topic facts — the
-            # point id is deterministic, so the seeded point is addressable.
+            # Backdate created_at AND last_seen so cases can stage the top-k
+            # race between an old standing preference and fresh same-topic
+            # facts — decay reads last_seen (see memories.search_memories),
+            # so leaving it at seed time would make a simulated "old" fact
+            # decay as if it had just been recalled. The point id is
+            # deterministic, so the seeded point is addressable.
+            backdated = time.time() - f["age_days"] * 86400
             client.set_payload(
                 collection_name=config.MEMORIES_COLLECTION,
-                payload={"created_at": time.time() - f["age_days"] * 86400},
+                payload={"created_at": backdated, "last_seen": backdated},
                 points=[memories.fact_point_id(
                     config.USER_ID, f["text"],
                     f.get("project") or config.DEFAULT_PROJECT,

@@ -2,9 +2,11 @@
 mode gives the actual filter/search semantics without a server."""
 
 import math
+import time
 
 import pytest
 from qdrant_client import QdrantClient
+from qdrant_client import models as qmodels
 
 from app import config, memories, memory_store, qdrant_setup
 from tests.conftest import FakeEmbed, FakeLLM
@@ -337,6 +339,88 @@ def test_search_applies_min_score(client):
     texts = [h["text"] for h in hits]
     assert "close fact" in texts
     assert "far fact" not in texts
+
+
+# ---------------------------------------------------------------------------
+# last_seen: recall refreshes the decay clock (config.LAST_SEEN_REFRESH)
+# ---------------------------------------------------------------------------
+def test_search_memories_refreshes_last_seen_on_hit(client):
+    embed = FakeEmbed({"old fact": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "old fact"}])
+    facts = memories.list_facts(client)
+    fact_id = facts[0]["id"]
+    backdated = facts[0]["created_at"] - 60 * 86400
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"created_at": backdated, "last_seen": backdated},
+        points=[fact_id],
+    )
+    memories.search_memories(client, embed, "the query", top_k=5)
+    refreshed = memories.list_facts(client)[0]
+    assert refreshed["last_seen"] > backdated + 30 * 86400
+
+
+def test_decay_uses_last_seen_not_created_at(client):
+    # Same embedding for both facts (isolates the decay math from
+    # similarity); different projects so the save-time supersede check
+    # (scoped to one project) doesn't collapse them into one fact.
+    embed = FakeEmbed({
+        "seen recently": _unit(0),
+        "seen long ago": _unit(0),
+        "the query": _unit(0),
+    })
+    memories.save_facts(client, embed, [{"text": "seen recently"}], project_id="p1")
+    memories.save_facts(client, embed, [{"text": "seen long ago"}], project_id="p2")
+    old_age = 60 * 86400
+    for f in memories.list_facts(client):
+        if f["text"] == "seen long ago":
+            backdated = f["created_at"] - old_age
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"created_at": backdated, "last_seen": backdated},
+                points=[f["id"]],
+            )
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    scores = {h["text"]: h["score"] for h in hits}
+    assert scores["seen recently"] > scores["seen long ago"]
+
+
+def test_last_seen_refresh_disabled_via_config(client, monkeypatch):
+    monkeypatch.setattr(config, "LAST_SEEN_REFRESH", False)
+    embed = FakeEmbed({"old fact": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "old fact"}])
+    facts = memories.list_facts(client)
+    fact_id = facts[0]["id"]
+    backdated = facts[0]["created_at"] - 200 * 86400
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"created_at": backdated, "last_seen": backdated},
+        points=[fact_id],
+    )
+    memories.search_memories(client, embed, "the query", top_k=5)
+    refreshed = memories.list_facts(client)[0]
+    assert refreshed["last_seen"] == backdated
+
+
+def test_search_memories_backward_compatible_without_last_seen(client):
+    # Simulates a fact saved before this field existed: no last_seen key.
+    embed = FakeEmbed({"legacy fact": _unit(0), "the query": _unit(0)})
+    vector = embed.get_text_embedding("legacy fact")
+    client.upsert(
+        collection_name=config.MEMORIES_COLLECTION,
+        points=[qmodels.PointStruct(
+            id="11111111-1111-1111-1111-111111111111",
+            vector=vector,
+            payload={
+                "user_id": config.USER_ID, "session_id": "s1",
+                "project_id": config.DEFAULT_PROJECT, "type": "fact",
+                "text": "legacy fact", "importance": 0.5,
+                "created_at": time.time() - 10 * 86400,
+            },
+        )],
+    )
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    assert [h["text"] for h in hits] == ["legacy fact"]
 
 
 # ---------------------------------------------------------------------------

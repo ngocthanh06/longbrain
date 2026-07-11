@@ -254,6 +254,7 @@ def save_facts(
             "text": text,
             "importance": importance,
             "created_at": now,
+            "last_seen": now,
         }
         if source_agent:
             payload["source_agent"] = source_agent
@@ -405,7 +406,11 @@ def search_memories(
     for e in hybrid.fuse(dense_hits, sparse_hits):
         payload = e["payload"]
         importance = payload.get("importance", 0.5)
-        age = max(now - (payload.get("created_at") or now), 0.0)
+        # Decay runs off last_seen, not created_at: recalling a fact is
+        # itself evidence it's still relevant (see config.LAST_SEEN_REFRESH).
+        # Facts saved before this field existed fall back to created_at.
+        last_seen = payload.get("last_seen") or payload.get("created_at") or now
+        age = max(now - last_seen, 0.0)
         final = e["similarity"] * _decay(age, config.MEMORY_HALF_LIFE_DAYS) * (0.5 + 0.5 * importance)
         hit_project = payload.get("project_id") or config.DEFAULT_PROJECT
         if project and hit_project == project:
@@ -423,13 +428,21 @@ def search_memories(
                 "project_id": hit_project,
                 "importance": importance,
                 "created_at": payload.get("created_at"),
+                "last_seen": last_seen,
                 "source_agent": payload.get("source_agent") or "",
                 "similarity": e["similarity"],
                 "score": final,
             }
         )
     scored.sort(key=lambda m: m["score"], reverse=True)
-    return [m for m in scored if m["score"] >= config.RECALL_MIN_SCORE][:top_k]
+    top = [m for m in scored if m["score"] >= config.RECALL_MIN_SCORE][:top_k]
+    if config.LAST_SEEN_REFRESH and top:
+        client.set_payload(
+            collection_name=config.MEMORIES_COLLECTION,
+            payload={"last_seen": now},
+            points=[m["id"] for m in top],
+        )
+    return top
 
 
 def list_facts(
@@ -472,6 +485,7 @@ def list_facts(
             "project_id": p.payload.get("project_id") or config.DEFAULT_PROJECT,
             "importance": p.payload.get("importance", 0.5),
             "created_at": p.payload.get("created_at"),
+            "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "superseded_by": p.payload.get("superseded_by"),
             "source_agent": p.payload.get("source_agent") or "",
         }
@@ -692,6 +706,7 @@ def graph_data(
             "project_id": p.payload.get("project_id") or config.DEFAULT_PROJECT,
             "importance": p.payload.get("importance", 0.5),
             "created_at": p.payload.get("created_at"),
+            "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "session_id": p.payload.get("session_id") or "",
             "superseded": bool(p.payload.get("superseded_by")),
             "source_agent": p.payload.get("source_agent") or "",

@@ -91,6 +91,11 @@ DEDUP_LLM_CHECK_MIN = float(os.getenv("DEDUP_LLM_CHECK_MIN", "0.60"))
 # score far below SUPERSEDE_SIMILARITY, and the LLM band only detects
 # rewordings — and never runs at save time under LLM_PROVIDER=none.
 TRIPLE_SUPERSEDE = os.getenv("TRIPLE_SUPERSEDE", "true").lower() == "true"
+# A fact's decay clock runs off `last_seen`, not `created_at`: recalling a
+# fact is itself evidence it's still relevant, so every fact returned by
+# search_memories gets last_seen bumped to now in the same call. Facts saved
+# before this field existed fall back to created_at (see _decay call site).
+LAST_SEEN_REFRESH = os.getenv("LAST_SEEN_REFRESH", "true").lower() == "true"
 # Recall multiplier for same-project hits, applied on top of the scope rule:
 # when a project is known, auto-recall hard-scopes facts/history to that
 # project + the default project (preferences are global and always pass) —
