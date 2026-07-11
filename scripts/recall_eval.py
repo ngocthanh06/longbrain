@@ -49,7 +49,9 @@ def seed(client: QdrantClient, embed, index, corpus: dict) -> None:
         memories.save_facts(
             client, embed,
             [{"text": f["text"], "type": f.get("type", "fact"),
-              "importance": f.get("importance", 0.5)}],
+              "importance": f.get("importance", 0.5),
+              "subject": f.get("subject", ""), "relation": f.get("relation", ""),
+              "object": f.get("object", "")}],
             project_id=f.get("project", ""), source_agent=f.get("source_agent", ""),
         )
         if f.get("age_days"):
