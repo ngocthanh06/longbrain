@@ -368,11 +368,12 @@ def memory_graph(
 
 @app.get("/memory/facts")
 def memory_list_facts(
-    project: str = "", type: str = "", include_superseded: bool = False, limit: int = 200
+    project: str = "", type: str = "", include_superseded: bool = False,
+    include_done: bool = False, limit: int = 200
 ):
     return memories.list_facts(
         state["qdrant_client"], project=project or None, ftype=type or None,
-        include_superseded=include_superseded, limit=limit,
+        include_superseded=include_superseded, include_done=include_done, limit=limit,
     )
 
 
@@ -445,6 +446,24 @@ def memory_retype_fact(fact_id: str, payload: TypeChange):
     if not memories.set_fact_type(state["qdrant_client"], fact_id, ftype):
         raise HTTPException(status_code=404, detail="fact not found")
     return {"status": "retyped", "id": fact_id, "type": ftype}
+
+
+class StatusChange(BaseModel):
+    status: str
+
+
+@app.patch("/memory/facts/{fact_id}/status")
+def memory_set_fact_status(fact_id: str, payload: StatusChange):
+    """Close/reopen a task fact (/ui action) — open/done instead of deleting
+    or superseding a commitment that's simply finished."""
+    status = payload.status.strip().lower()
+    if status not in memories.VALID_STATUSES:
+        raise HTTPException(
+            status_code=400, detail=f"status must be one of {sorted(memories.VALID_STATUSES)}"
+        )
+    if not memories.set_fact_status(state["qdrant_client"], fact_id, status):
+        raise HTTPException(status_code=404, detail="fact not found")
+    return {"status": "updated", "id": fact_id, "task_status": status}
 
 
 @app.patch("/sessions/{session_id}/project")

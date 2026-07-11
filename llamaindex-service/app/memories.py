@@ -377,6 +377,13 @@ def search_memories(
     flt.must_not = [
         qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary"))
     ]
+    if config.HIDE_DONE_TASKS:
+        # A closed task is done, not deleted/superseded — stop surfacing it
+        # in recall the same way a superseded fact stops surfacing. Absent
+        # field never matches "done", so non-task facts are unaffected.
+        flt.must_not.append(
+            qmodels.FieldCondition(key="status", match=qmodels.MatchValue(value="done"))
+        )
     if project:
         # Scope: project-anchored knowledge (facts/decisions/tasks) from
         # OTHER projects stays out of auto-recall — asking about project A
@@ -451,6 +458,7 @@ def list_facts(
     project: str | None = None,
     ftype: str | None = None,
     include_superseded: bool = False,
+    include_done: bool = False,
     limit: int = 200,
 ) -> list[dict]:
     must = [
@@ -463,12 +471,17 @@ def list_facts(
     if ftype:
         must.append(qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value=ftype)))
     flt = qmodels.Filter(must=must)
+    flt.must_not = []
     if ftype != "session_summary":
         # Summaries are per-session artifacts, not facts — keep them out of
         # the /ui graph and fact listings unless asked for explicitly.
-        flt.must_not = [
+        flt.must_not.append(
             qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary"))
-        ]
+        )
+    if not include_done:
+        flt.must_not.append(
+            qmodels.FieldCondition(key="status", match=qmodels.MatchValue(value="done"))
+        )
     points, _ = client.scroll(
         collection_name=config.MEMORIES_COLLECTION,
         scroll_filter=flt,
@@ -487,6 +500,7 @@ def list_facts(
             "created_at": p.payload.get("created_at"),
             "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "superseded_by": p.payload.get("superseded_by"),
+            "status": p.payload.get("status"),
             "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points
@@ -522,6 +536,27 @@ def set_fact_type(client: QdrantClient, fact_id: str, ftype: str) -> bool:
     client.set_payload(
         collection_name=config.MEMORIES_COLLECTION,
         payload={"type": ftype},
+        points=[fact_id],
+    )
+    return True
+
+
+VALID_STATUSES = {"open", "done"}
+
+
+def set_fact_status(client: QdrantClient, fact_id: str, status: str) -> bool:
+    """Close/reopen a task fact (/ui action). False if the id is unknown or
+    status isn't open/done. No status set means "open" (see HIDE_DONE_TASKS)."""
+    if status not in VALID_STATUSES:
+        return False
+    existing = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION, ids=[fact_id], with_payload=False
+    )
+    if not existing:
+        return False
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"status": status},
         points=[fact_id],
     )
     return True
@@ -709,6 +744,7 @@ def graph_data(
             "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "session_id": p.payload.get("session_id") or "",
             "superseded": bool(p.payload.get("superseded_by")),
+            "status": p.payload.get("status"),
             "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points

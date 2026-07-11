@@ -373,6 +373,7 @@
       <button class="btn" id="pRetagGroup">Re-tag linked group…</button>
       <button class="btn" id="pRetagSession">Re-tag whole session…</button>
       <button class="btn" id="pRetype">Change type…</button>
+      <button class="btn" id="pTaskStatus" style="display:none">Close task</button>
       <button class="btn danger" id="pDelete">Delete this memory</button>
     </div>
     <h2>Related memories</h2>
@@ -1334,9 +1335,12 @@ function select(n, withRipple = true) {
     <tr><td>Session</td><td>${escapeHtml(n.session_id || "—")}</td></tr>
     <tr><td>Agent</td><td>${escapeHtml(n.source_agent || "—")}</td></tr>
     <tr><td>Status</td><td>${n.superseded ? "superseded" : "active"}</td></tr>
+    ${n.type === "task" ? `<tr><td>Task</td><td>${n.status === "done" ? "✓ done" : "open"}</td></tr>` : ""}
     <tr><td>Links</td><td>${(edgesByNode.get(n.id) || []).length} related</td></tr>`;
   $("pLoadSession").style.display = n.session_id ? "" : "none";
   $("pRetagSession").style.display = n.session_id ? "" : "none";
+  $("pTaskStatus").style.display = n.type === "task" ? "" : "none";
+  $("pTaskStatus").textContent = n.status === "done" ? "Reopen task" : "Close task";
 
   // Scope counts on the re-tag buttons, so "everything vs just this one" is
   // an informed choice: group = same-project cluster up to 2 links away
@@ -1603,6 +1607,13 @@ $("pRetype").onclick = async () => {
   if (!t || t === selected.type) return;
   const r = await patchJSON(`/memory/facts/${encodeURIComponent(selected.id)}/type`, { type: t });
   if (r) { toast(`Changed type to "${t}".`); select(null); await load(); }
+};
+
+$("pTaskStatus").onclick = async () => {
+  if (!selected || selected.type !== "task") return;
+  const next = selected.status === "done" ? "open" : "done";
+  const r = await patchJSON(`/memory/facts/${encodeURIComponent(selected.id)}/status`, { status: next });
+  if (r) { toast(next === "done" ? "Task closed." : "Task reopened."); select(null); await load(); }
 };
 
 $("pDelete").onclick = async () => {

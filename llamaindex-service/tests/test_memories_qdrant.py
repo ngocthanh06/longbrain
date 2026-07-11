@@ -576,6 +576,61 @@ def test_set_fact_type(client):
     assert memories.set_fact_type(client, "00000000-0000-0000-0000-00000000dead", "task") is False
 
 
+# ---------------------------------------------------------------------------
+# status: open/done for task-type facts
+# ---------------------------------------------------------------------------
+def test_set_fact_status_open_to_done_and_back(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "ship the thing", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+
+    assert memories.list_facts(client)[0]["status"] is None  # no field = open
+    assert memories.set_fact_status(client, fact_id, "done") is True
+    assert memories.list_facts(client, include_done=True)[0]["status"] == "done"
+    assert memories.set_fact_status(client, fact_id, "open") is True
+    assert memories.list_facts(client)[0]["status"] == "open"
+
+
+def test_set_fact_status_rejects_invalid_value(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "ship the thing", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    assert memories.set_fact_status(client, fact_id, "archived") is False
+    assert memories.list_facts(client)[0]["status"] is None
+
+
+def test_set_fact_status_unknown_id_returns_false(client):
+    assert memories.set_fact_status(client, "00000000-0000-0000-0000-00000000dead", "done") is False
+
+
+def test_search_memories_hides_done_tasks_by_default(client):
+    embed = FakeEmbed({"finish the report": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "finish the report", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    assert "finish the report" not in [h["text"] for h in hits]
+
+
+def test_search_memories_shows_done_tasks_when_hide_disabled(client, monkeypatch):
+    monkeypatch.setattr(config, "HIDE_DONE_TASKS", False)
+    embed = FakeEmbed({"finish the report": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "finish the report", "type": "task"}])
+    fact_id = memories.list_facts(client, include_done=True)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    assert "finish the report" in [h["text"] for h in hits]
+
+
+def test_list_facts_include_done_toggle(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "closed task", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    assert memories.list_facts(client) == []
+    assert len(memories.list_facts(client, include_done=True)) == 1
+
+
 def test_delete_fact_hard_deletes(client):
     embed = FakeEmbed()
     memories.save_facts(client, embed, [{"text": "to forget"}])

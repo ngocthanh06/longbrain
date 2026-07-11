@@ -96,6 +96,12 @@ TRIPLE_SUPERSEDE = os.getenv("TRIPLE_SUPERSEDE", "true").lower() == "true"
 # search_memories gets last_seen bumped to now in the same call. Facts saved
 # before this field existed fall back to created_at (see _decay call site).
 LAST_SEEN_REFRESH = os.getenv("LAST_SEEN_REFRESH", "true").lower() == "true"
+# Task-type facts carry an open/done status (see memories.set_fact_status).
+# No status field = "open" (same None-safe convention as superseded_by), so
+# every task saved before this feature existed stays visible with zero
+# migration. Recall/list hide status=="done" tasks by default — this is a
+# recall-affecting change, hence the kill switch.
+HIDE_DONE_TASKS = os.getenv("HIDE_DONE_TASKS", "true").lower() == "true"
 # Recall multiplier for same-project hits, applied on top of the scope rule:
 # when a project is known, auto-recall hard-scopes facts/history to that
 # project + the default project (preferences are global and always pass) —
