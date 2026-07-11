@@ -58,7 +58,7 @@ USER_ID = os.getenv("LONGBRAIN_USER_ID") or os.getenv("HERMES_USER_ID", "local")
 # project from the turn's cwd; anything unmatched lands in "default".
 DEFAULT_PROJECT = "default"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ---------------------------------------------------------------------------
 # Memory behaviour
@@ -84,6 +84,39 @@ SUPERSEDE_SIMILARITY = float(os.getenv("SUPERSEDE_SIMILARITY", "0.92"))
 # merging unrelated same-topic facts. Only checked when an LLM is configured
 # (LLM_PROVIDER=none skips this band and falls back to threshold-only).
 DEDUP_LLM_CHECK_MIN = float(os.getenv("DEDUP_LLM_CHECK_MIN", "0.60"))
+# Triple-based supersession: facts may carry a (subject, relation, object)
+# triple extracted during consolidation. A new fact with the same
+# subject+relation as an active one retires it, catching CONTRADICTIONS
+# ("uses pnpm" -> "switched to bun") that both cosine bands miss: the texts
+# score far below SUPERSEDE_SIMILARITY, and the LLM band only detects
+# rewordings — and never runs at save time under LLM_PROVIDER=none.
+TRIPLE_SUPERSEDE = os.getenv("TRIPLE_SUPERSEDE", "true").lower() == "true"
+# A fact's decay clock runs off `last_seen`, not `created_at`: recalling a
+# fact is itself evidence it's still relevant, so every fact returned by
+# search_memories gets last_seen bumped to now in the same call. Facts saved
+# before this field existed fall back to created_at (see _decay call site).
+LAST_SEEN_REFRESH = os.getenv("LAST_SEEN_REFRESH", "true").lower() == "true"
+# Task-type facts carry an open/done status (see memories.set_fact_status).
+# No status field = "open" (same None-safe convention as superseded_by), so
+# every task saved before this feature existed stays visible with zero
+# migration. Recall/list hide status=="done" tasks by default — this is a
+# recall-affecting change, hence the kill switch.
+HIDE_DONE_TASKS = os.getenv("HIDE_DONE_TASKS", "true").lower() == "true"
+# Third, weakest-signal tier in save_facts, after triple-supersede and
+# cosine-dedup: when neither resolved a new fact and it still scored inside
+# the dedup band against one existing fact, ask the LLM whether the two
+# actually CONTRADICT (different values for the same real-world thing) —
+# the existing dedup call only asks "same fact reworded?", never
+# "conflicting?". Flags both facts via conflicts_with; never auto-resolves.
+CONTRADICTION_DETECTION = os.getenv("CONTRADICTION_DETECTION", "true").lower() == "true"
+# Topic sub-clustering for the /ui galaxy: connected-components over the
+# similarity matrix graph_data() already computes (no new LLM calls, no new
+# payload field, no migration — computed fresh on every request). Stricter
+# than the edge-drawing threshold (0.35) because a "topic" needs tighter
+# cohesion than "merely related". Clusters of size 1 stay topic=None — the
+# graceful-degrade path for old data and for this flag being off.
+GRAPH_TOPIC_CLUSTERING = os.getenv("GRAPH_TOPIC_CLUSTERING", "true").lower() == "true"
+GRAPH_TOPIC_MIN_SIMILARITY = float(os.getenv("GRAPH_TOPIC_MIN_SIMILARITY", "0.55"))
 # Recall multiplier for same-project hits, applied on top of the scope rule:
 # when a project is known, auto-recall hard-scopes facts/history to that
 # project + the default project (preferences are global and always pass) —

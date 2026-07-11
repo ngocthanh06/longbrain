@@ -155,6 +155,24 @@ def test_resolve_git_root_names_the_project(hermes_db):
     assert catalog["myrepo"]["path"] == str(repo)
 
 
+def test_resolve_skips_codex_desktop_scratch_dir(hermes_db):
+    # Codex Desktop invents ~/Documents/Codex/<date>/<slug-of-title> for
+    # ad-hoc chats with no real workspace open — must not become a project.
+    scratch = hermes_db / "Documents" / "Codex" / "2026-07-11" / "hi-n-nay-khi-m-s"
+    scratch.mkdir(parents=True)
+    assert resolve_project(str(scratch)) == ("default", "default")
+    assert not project_catalog.CATALOG_FILE.exists()
+
+
+def test_resolve_real_folder_named_codex_still_works(hermes_db):
+    # A genuine project folder that happens to be named "codex" (e.g. a
+    # clone of the Codex CLI repo) is a real signal and must still resolve —
+    # only the Documents/Codex/<date>/ scratch layout is special-cased.
+    real = hermes_db / "codex"
+    real.mkdir()
+    assert resolve_project(str(real)) == ("codex", "folder")
+
+
 # ---------------------------------------------------------------------------
 # debug logging: opt-in only, truncated, env parsed defensively
 # ---------------------------------------------------------------------------

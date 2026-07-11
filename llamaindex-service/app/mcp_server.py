@@ -19,6 +19,13 @@ class Fact(BaseModel):
     text: str = Field(description="Self-contained fact worth remembering long-term")
     type: str = Field(default="fact", description="fact | preference | decision | task")
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Optional (subject, relation, object) triple from the extraction
+    # instructions. relation must be a single-valued snake_case attribute
+    # (e.g. package_manager); a new fact with the same subject+relation
+    # supersedes the old value. Omit when no single-valued attribute applies.
+    subject: str = Field(default="")
+    relation: str = Field(default="")
+    object: str = Field(default="")
 
 
 mcp = FastMCP("longbrain", stateless_http=True) if FastMCP else None

@@ -131,6 +131,13 @@ def extract_completed_turns(path: str | Path) -> list[dict]:
             continue
         payload = entry.get("payload") or {}
         if entry.get("type") == "session_meta":
+            if payload.get("thread_source") == "subagent":
+                # Guardian/subagent rollouts (Codex's internal safety
+                # risk-assessment turns — synthetic "approval assessment"
+                # prompts answered with a risk_level/outcome JSON blob) are
+                # not real user conversation. The whole file is one such
+                # thread, so skip it entirely rather than recording noise.
+                return []
             session_id = payload.get("session_id") or payload.get("id") or session_id
             cwd = payload.get("cwd") or cwd
             continue

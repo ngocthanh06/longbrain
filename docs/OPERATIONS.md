@@ -20,9 +20,11 @@ installed agent (each skipped gracefully when absent):
   consolidation uses the service-side LLM or the `consolidate_session` MCP
   tool. Restart open sessions to pick the hooks up.
 - **Codex** (`scripts/configure_codex.py`): registers the `longbrain` MCP
-  server and wraps Codex's top-level `notify` command so completed rollout
-  turns are synced into Longbrain after each turn. Recall remains tools-only
-  because Codex does not expose a pre-prompt injection hook.
+  server plus `SessionStart`, `UserPromptSubmit`, and `Stop` hooks in
+  `~/.codex/hooks.json`. These provide consolidation catch-up, automatic
+  recall injection, and automatic turn recording. The top-level `notify`
+  wrapper remains as a write fallback for older Codex versions. After setup,
+  restart Codex and review/trust the Longbrain definitions once with `/hooks`.
 
 It also installs two launchd agents: the nightly backup and the `docs/`
 ingest watcher.

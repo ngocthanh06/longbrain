@@ -160,6 +160,16 @@
   #legend .lg-row b { color: var(--text-primary); }
   #legend .lg-glyph { flex: none; width: 16px; text-align: center; }
   #legend .lg-sep { border-top: 1px solid var(--border); margin: 8px 0; }
+  #health {
+    position: absolute; top: 12px; right: 12px; z-index: 8; display: none;
+    max-width: 320px; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow); padding: 12px 14px;
+  }
+  #health .hl-title { font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 8px; }
+  #health .hl-row { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--text-secondary); }
+  #health .hl-row b { color: var(--text-primary); }
+  #health .hl-sep { border-top: 1px solid var(--border); margin: 8px 0; }
+  #health .hl-sub { color: var(--text-muted); font-size: 11px; margin-bottom: 2px; }
   #tooltip {
     position: absolute; pointer-events: none; display: none; max-width: 340px;
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
@@ -308,13 +318,16 @@
   <button id="searchBtn"><span>🔍</span> Search memories… <kbd>⌘K</kbd></button>
   <button class="btn active" id="viewGraph">Graph</button>
   <button class="btn" id="viewList">List</button>
+  <button class="btn" id="viewEntities" title="Entity graph built from memory triples — who/what relates to what">Entities</button>
   <button class="btn" id="fitBtn" title="Fit graph to window">Fit</button>
   <button class="btn" id="exportBtn" title="Export current view as PNG">PNG</button>
   <button class="btn" id="bundleExportBtn" title="Download all memory as a JSON bundle — for moving to another machine">⇩ Export</button>
   <button class="btn" id="bundleImportBtn" title="Import a bundle exported on another machine — re-embeds with the current model, existing records are skipped">⇪ Import</button>
   <button class="btn" id="themeBtn" title="Theme: auto / light / dark">◐ auto</button>
   <button class="btn" id="legendBtn" title="What do the shapes and colors mean?">?</button>
+  <button class="btn" id="healthBtn" title="Memory health: counts, growth, superseded ratio, consolidation backlog">♡</button>
   <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
+  <label class="toggle" title="Group each galaxy's memories by topic — same-project facts that cluster tightly by meaning"><input type="checkbox" id="topicNesting" checked> topics</label>
 </header>
 <div id="chips">
   <div class="filter-dd" id="projectDD">
@@ -352,6 +365,10 @@
     <div class="lg-row"><span class="lg-glyph">⟋</span>edge = semantic similarity — darker means closer in meaning</div>
     <div class="lg-row"><span class="lg-glyph" style="color:var(--accent)">◌</span>dotted ring = same source session as the selected memory ("Re-tag whole session" moves these together)</div>
   </div>
+  <div id="health">
+    <div class="hl-title">Memory health</div>
+    <div id="healthBody">Loading…</div>
+  </div>
   <div id="tooltip"></div>
   <div id="list"></div>
   <div id="bulkbar">
@@ -372,6 +389,7 @@
       <button class="btn" id="pRetagGroup">Re-tag linked group…</button>
       <button class="btn" id="pRetagSession">Re-tag whole session…</button>
       <button class="btn" id="pRetype">Change type…</button>
+      <button class="btn" id="pTaskStatus" style="display:none">Close task</button>
       <button class="btn danger" id="pDelete">Delete this memory</button>
     </div>
     <h2>Related memories</h2>
@@ -444,6 +462,7 @@ let viewW = 0, viewH = 0;
 let visNodes = [], visEdges = [];
 let needsRender = true, hoverEasing = false;
 let edgeMin = 0.35, sameProjOnly = false;  // link display filters
+let topicNesting = true;  // nest same-topic nodes inside their galaxy (physics term in step())
 function invalidate() { needsRender = true; }
 
 function readCss() {
@@ -503,6 +522,19 @@ function galaxyRot(slug) { return (strHash(slug) % 1000) / 1000 * Math.PI * 2; }
 // rotation — a distinct hash seed so it doesn't correlate with galaxyRot.
 function galaxySpin(slug) { return ((strHash(slug + "_spin") % 1000) / 1000 - 0.5) * 0.36; }
 
+// Topic sub-clustering (server-computed connected-components, see
+// memories.graph_data): a small, deterministic offset from the node's own
+// galaxy center, keyed by topic id, so same-topic nodes gravitate toward a
+// shared point strictly inside their project's galaxy. Reuses the same
+// hash-based determinism as galaxyRot/galaxySpin rather than a separate
+// static layout pass — nodes are already under continuous force simulation,
+// so a second gravity term composes naturally with the existing one.
+function topicCenterOffset(topic, footprint) {
+  const a = (strHash(topic) % 1000) / 1000 * Math.PI * 2;
+  const r = Math.min(footprint * 0.5, 90);
+  return { dx: Math.cos(a) * r, dy: Math.sin(a) * r };
+}
+
 function layoutGalaxies(countsBySlug, slugs) {
   if (slugs.length <= 1) {
     projectCenter = new Map(slugs.map(s =>
@@ -560,9 +592,10 @@ function rebuildVisible() {
 }
 
 // -------------------------------------------------------------------- data
+let graphMode = "facts";  // "entities" = triple-based entity graph
 async function load() {
   const inc = $("showSuperseded").checked;
-  const data = await (await fetch(`/memory/graph?include_superseded=${inc}`)).json();
+  const data = await (await fetch(`/memory/graph?include_superseded=${inc}&mode=${graphMode}`)).json();
   const old = new Map(nodes.map(n => [n.id, n]));
 
   // Galaxy centers must exist before nodes are placed, so a brand-new memory
@@ -783,6 +816,16 @@ function step() {
     const center = projectCenter.get(n.project_id) || { x: 0, y: 0 };
     const g = 0.0016 + 0.0012 * (n.importance || 0.5);
     n.vx -= (n.x - center.x) * g * alpha; n.vy -= (n.y - center.y) * g * alpha;
+    if (topicNesting && n.topic) {
+      // A second, tighter gravity toward this topic's own point inside the
+      // galaxy — composes with the project-level pull above rather than
+      // replacing it, so topics nest inside galaxies instead of escaping them.
+      const gc = projectCenter.get(n.project_id);
+      const foot = gc ? gc.r : galaxyFootprint(1);
+      const off = topicCenterOffset(n.topic, foot);
+      const tx = center.x + off.dx, ty = center.y + off.dy;
+      n.vx -= (n.x - tx) * 0.004 * alpha; n.vy -= (n.y - ty) * 0.004 * alpha;
+    }
     if (dragging === n) { n.vx = n.vy = 0; continue; }
     n.x += n.vx; n.y += n.vy; n.vx *= 0.88; n.vy *= 0.88;
   }
@@ -1098,6 +1141,14 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(x1, y1);
     ctx.quadraticCurveTo(mx - dy / d * off, my + dx / d * off, x2, y2);
     ctx.stroke();
+    // entity mode: relation name at the edge midpoint
+    if (e.label) {
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.fillStyle = active ? css["--accent"] : css["--text-muted"];
+      ctx.textAlign = "center";
+      ctx.fillText(e.label, mx, my - 5);
+      ctx.textAlign = "left";
+    }
   }
   ctx.globalAlpha = 1;
 
@@ -1324,9 +1375,20 @@ function select(n, withRipple = true) {
     <tr><td>Session</td><td>${escapeHtml(n.session_id || "—")}</td></tr>
     <tr><td>Agent</td><td>${escapeHtml(n.source_agent || "—")}</td></tr>
     <tr><td>Status</td><td>${n.superseded ? "superseded" : "active"}</td></tr>
+    ${n.type === "task" ? `<tr><td>Task</td><td>${n.status === "done" ? "✓ done" : "open"}</td></tr>` : ""}
+    ${n.conflicts_with ? `<tr><td>⚠ Conflict</td><td><span class="conflict-link" data-id="${n.conflicts_with}" style="cursor:pointer;text-decoration:underline;color:var(--accent)">may contradict another memory — view</span></td></tr>` : ""}
+    ${n.topic ? `<tr><td>Topic</td><td>${nodes.filter(x => x.topic === n.topic).length} related by meaning</td></tr>` : ""}
     <tr><td>Links</td><td>${(edgesByNode.get(n.id) || []).length} related</td></tr>`;
   $("pLoadSession").style.display = n.session_id ? "" : "none";
   $("pRetagSession").style.display = n.session_id ? "" : "none";
+  $("pTaskStatus").style.display = n.type === "task" ? "" : "none";
+  $("pTaskStatus").textContent = n.status === "done" ? "Reopen task" : "Close task";
+  $("pMeta").querySelectorAll(".conflict-link[data-id]").forEach(el => {
+    el.onclick = () => {
+      const t = nodes.find(x => x.id === el.dataset.id);
+      if (t) { select(t); camTarget = { x: t.x, y: t.y, k: Math.max(cam.k, 1.2) }; }
+    };
+  });
 
   // Scope counts on the re-tag buttons, so "everything vs just this one" is
   // an informed choice: group = same-project cluster up to 2 links away
@@ -1595,6 +1657,13 @@ $("pRetype").onclick = async () => {
   if (r) { toast(`Changed type to "${t}".`); select(null); await load(); }
 };
 
+$("pTaskStatus").onclick = async () => {
+  if (!selected || selected.type !== "task") return;
+  const next = selected.status === "done" ? "open" : "done";
+  const r = await patchJSON(`/memory/facts/${encodeURIComponent(selected.id)}/status`, { status: next });
+  if (r) { toast(next === "done" ? "Task closed." : "Task reopened."); select(null); await load(); }
+};
+
 $("pDelete").onclick = async () => {
   if (!selected) return;
   const preview = selected.text.length > 80 ? selected.text.slice(0, 80) + "…" : selected.text;
@@ -1835,13 +1904,52 @@ $("legendBtn").onclick = () => {
   const lg = $("legend");
   lg.style.display = lg.style.display === "block" ? "none" : "block";
 };
+async function renderHealth() {
+  const body = $("healthBody");
+  body.textContent = "Loading…";
+  let s;
+  try { s = await (await fetch("/memory/stats")).json(); }
+  catch { body.textContent = "Failed to load."; return; }
+  const total = s.total_active + s.total_superseded;
+  const row = (label, value) => `<div class="hl-row"><span>${label}</span><b>${value}</b></div>`;
+  const byList = (obj) => Object.entries(obj)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => row(escapeHtml(k), v)).join("") || `<div class="hl-sub">none</div>`;
+  body.innerHTML =
+    row("Active facts", s.total_active) +
+    row("Superseded", `${s.total_superseded} (${Math.round(s.superseded_ratio * 100)}%)`) +
+    row("New in 24h", s.new_last_24h) +
+    row("New in 7d", s.new_last_7d) +
+    row("Open tasks", s.open_tasks) +
+    row("Done tasks", s.done_tasks) +
+    row("Flagged conflicts", s.flagged_conflicts) +
+    row("Consolidation backlog", s.consolidation_backlog) +
+    `<div class="hl-sep"></div><div class="hl-sub">By type</div>` + byList(s.by_type) +
+    `<div class="hl-sep"></div><div class="hl-sub">By project</div>` + byList(s.by_project);
+}
+$("healthBtn").onclick = () => {
+  const hl = $("health");
+  const opening = hl.style.display !== "block";
+  hl.style.display = opening ? "block" : "none";
+  if (opening) renderHealth();
+};
 $("viewGraph").onclick = () => { $("list").style.display = "none"; setView("viewGraph"); };
 $("viewList").onclick = () => { renderList(); $("list").style.display = "block"; setView("viewList"); };
+$("viewEntities").onclick = () => {
+  graphMode = graphMode === "entities" ? "facts" : "entities";
+  $("viewEntities").classList.toggle("active", graphMode === "entities");
+  $("list").style.display = "none"; setView("viewGraph");
+  load();
+};
 function setView(id) {
   $("viewGraph").classList.toggle("active", id === "viewGraph");
   $("viewList").classList.toggle("active", id === "viewList");
 }
 $("showSuperseded").onchange = load;
+$("topicNesting").onchange = e => {
+  topicNesting = e.target.checked;
+  alpha = Math.max(alpha, .3);
+};
 $("edgeMin").oninput = e => {
   edgeMin = parseFloat(e.target.value);
   $("edgeMinVal").textContent = "≥ " + edgeMin.toFixed(2);

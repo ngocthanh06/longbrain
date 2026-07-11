@@ -3,6 +3,7 @@
   "corpus": {
     "facts": [
       {"text": "Dự án shopmed dùng PostgreSQL với PostGIS làm database chính", "type": "fact", "project": "shopmed", "source_agent": "claude-code"},
+      {"text": "shopmed chạy trên AWS ECS Fargate, region ap-northeast-1", "type": "fact", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Dự án shopmed: mọi lệnh chạy trong Docker container, lint backend dùng phpcs chuẩn PSR12", "type": "fact", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Quyết định của dự án shopmed: đếm lượt sử dụng AI import tại thời điểm job hoàn thành, không phải lúc tạo job", "type": "decision", "project": "shopmed", "source_agent": "claude-code"},
       {"text": "Dự án bookinghub viết bằng Go theo clean architecture, 5 module: auth, booking, merchant, user, example", "type": "fact", "project": "bookinghub", "source_agent": "claude-code"},
@@ -13,7 +14,9 @@
       {"text": "Quyết định shopmed: mỗi đợt thay đổi được chia thành nhiều commit theo từng nhóm concern riêng biệt", "type": "decision", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
       {"text": "Roadmap shopmed sau đợt commit refactor: việc tiếp theo là đặt tên tường minh cho volume dữ liệu rồi cập nhật bộ nhớ dự án", "type": "task", "project": "shopmed", "source_agent": "claude-code", "importance": 0.7},
       {"text": "Người dùng thích giao diện cuộn chuột mượt và hiệu ứng zoom khi lọc dữ liệu", "type": "preference", "project": "default", "source_agent": "hermes"},
-      {"text": "Người dùng muốn mọi comment trong code viết bằng tiếng Anh", "type": "preference", "project": "default", "source_agent": "claude-code"}
+      {"text": "Người dùng muốn mọi comment trong code viết bằng tiếng Anh", "type": "preference", "project": "default", "source_agent": "claude-code"},
+      {"text": "Người dùng cài dependency và chạy script bằng pnpm cho mọi dự án", "type": "preference", "project": "default", "source_agent": "claude-code", "age_days": 60, "subject": "user", "relation": "package_manager", "object": "pnpm"},
+      {"text": "Người dùng đã chuyển hẳn sang bun, từ giờ cài đặt lẫn chạy script đều dùng bun", "type": "preference", "project": "default", "source_agent": "claude-code", "age_days": 40, "subject": "user", "relation": "package_manager", "object": "bun"}
     ],
     "history": [
       {"session": "s-review-1", "project": "shopmed", "role": "user", "content": "review giúp tôi 2 commit mới về tính năng giới hạn lượt dùng AI import"},
@@ -109,6 +112,22 @@
       "expect_include": ["Co-Authored-By"],
       "expect_exclude": [],
       "note": "a standing-convention preference (4 days old, default importance) must win the top-k race against fresh same-topic status facts at the moment of ACTING — gauge for RECALL_PREFERENCE_BOOST; reproduces the real 2026-07-10 failure (Co-Authored-By trailer added even though the preference was saved)"
+    },
+    {
+      "name": "vn-stale-fact-superseded",
+      "query": "tôi dùng gì để cài dependency và chạy script?",
+      "project": "shopmed",
+      "expect_include": ["bun"],
+      "expect_exclude": ["pnpm"],
+      "note": "triple supersession: the two seeded preferences share (user, package_manager) with different objects and texts far apart in cosine — without the triple path recall returns BOTH; gauge for TRIPLE_SUPERSEDE (reproduces the stale pnpm→bun failure)"
+    },
+    {
+      "name": "vn-multihop-project-deploy",
+      "query": "dự án nào dùng PostgreSQL, và nó chạy ở đâu?",
+      "project": "",
+      "expect_include": ["ap-northeast-1"],
+      "expect_exclude": [],
+      "note": "genuine 2-hop query: hop 1 (PostgreSQL -> shopmed) matches strongly on the exact token; hop 2 (shopmed -> AWS ECS Fargate/ap-northeast-1) shares no keywords with the query text at all, so dense+BM25 top-k can't bridge it without following the entity graph — gauge for whether KG-lite's entity graph (currently /ui-visualization-only, not wired into recall) is worth using for actual recall; expected to fail against the current pipeline"
     }
   ]
 }

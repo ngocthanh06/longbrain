@@ -151,7 +151,7 @@ def check_hermes() -> None:
 
 
 def check_codex() -> None:
-    print("==> Codex (notify write + MCP)")
+    print("==> Codex (lifecycle hooks + MCP)")
     if not configure_codex.detected():
         skip("not installed")
         return
@@ -161,9 +161,49 @@ def check_codex() -> None:
         ok(f"MCP longbrain registered in {config}")
     else:
         bad(f"MCP longbrain missing from {config} — re-run ./setup.sh")
+    hooks_ok = True
+    try:
+        hooks_config = json.loads(configure_codex.HOOKS_CONFIG.read_text())
+    except FileNotFoundError:
+        hooks_config = {}
+        hooks_ok = False
+        bad(f"Codex lifecycle hooks missing from {configure_codex.HOOKS_CONFIG}")
+    except (OSError, json.JSONDecodeError):
+        hooks_config = {}
+        hooks_ok = False
+        bad(f"Codex lifecycle hooks unreadable: {configure_codex.HOOKS_CONFIG}")
+    configured = json.dumps(hooks_config)
+    for event, spec in configure_codex.LIFECYCLE_HOOKS.items():
+        if str(spec["script"]) in configured and spec["script"].exists():
+            ok(f"lifecycle hook {event}")
+        else:
+            hooks_ok = False
+            bad(f"Codex {event} hook missing — re-run ./setup.sh")
+
+    lifecycle_state = configure_codex.CODEX_HOME / "longbrain_codex_hooks_state.json"
+    if hooks_ok:
+        try:
+            state = json.loads(lifecycle_state.read_text())
+        except FileNotFoundError:
+            skip("lifecycle hooks not observed yet (restart Codex, trust them with /hooks)")
+        except (OSError, json.JSONDecodeError):
+            bad(f"Codex lifecycle state is unreadable: {lifecycle_state}")
+        else:
+            if state.get("last_recall_ok") is True:
+                ok("Codex automatic recall observed")
+            elif state.get("last_recall_ok") is False:
+                bad("Codex recall hook ran but the memory service call failed")
+            else:
+                skip("Codex recall hook has not handled a searchable prompt yet")
+            if state.get("last_write_ok") is True:
+                ok("Codex automatic turn recording observed")
+            elif state.get("last_write_ok") is False:
+                bad(f"Codex write hook failed: {state.get('last_write_error') or 'unknown error'}")
+            else:
+                skip("Codex write hook has not completed a turn yet")
+
     if str(configure_codex.HOOK_SCRIPT) in text and "notify" in text:
-        ok("turn-ended notify hook registered (records completed turns)")
-        skip("no pre-prompt hook: Codex recall is tools-only")
+        ok("turn-ended notify fallback registered")
         state_path = configure_codex.CODEX_HOME / "longbrain_codex_notify_state.json"
         try:
             state = json.loads(state_path.read_text())
@@ -191,7 +231,7 @@ def check_codex() -> None:
             else:
                 skip("Codex has no rollout files to verify yet")
     else:
-        bad(f"Codex notify hook missing from {config} — re-run ./setup.sh")
+        skip("notify fallback missing; lifecycle hooks remain the primary adapter")
 
 
 def main() -> int:

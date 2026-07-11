@@ -11,9 +11,9 @@ install** — the host-side scripts and hooks run on the stock system
 
 Two full adapters ship today: **Hermes Desktop** and **Claude Code**. Both
 access the same memory store, so what you teach one agent, the other
-recalls. **Codex** ships as a partial adapter: MCP tools plus automatic
-turn-ended recording through Codex's `notify` command (recall remains
-tools-only). Any MCP client can connect manually — see the
+recalls. **Codex** ships with official lifecycle hooks for automatic recall,
+turn recording, and session-start consolidation catch-up; its older `notify`
+adapter remains as a write fallback. Any MCP client can connect manually — see the
 [support tiers](adapters/README.md#support-tiers). Adding a new agent only
 means writing a new adapter — the system's architecture doesn't change.
 
@@ -56,8 +56,8 @@ means writing a new adapter — the system's architecture doesn't change.
   Linux agent wiring is untested.
 - **Personal, single-machine by design** — no sync, no multi-user, no
   realtime multi-device (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
-- **Codex tier**: turns are recorded automatically, but recall is
-  tools-only — Codex has no pre-prompt injection hook yet.
+- **Codex lifecycle gap**: Codex has no `SessionEnd` hook, so consolidation
+  catches up on the next `SessionStart` instead of firing when a chat closes.
 - **Distillation quality depends on the configured LLM** — a weak local
   model extracts facts less reliably; `LLM_PROVIDER=none` delegates
   distillation to the agent's own model via MCP.
@@ -72,12 +72,12 @@ flowchart TB
     subgraph Agents["User's machine — chat agents"]
         HD["Hermes Desktop<br/>hooks/*.py"]
         CC["Claude Code<br/>hooks/claude/*.py"]
-        CX["Codex<br/>notify → hooks/codex/turn_ended.py"]
+        CX["Codex<br/>SessionStart · UserPromptSubmit · Stop hooks"]
     end
 
     HD -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
     CC -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
-    CX -- "POST /memory/append<br/>MCP /mcp" --> SVC
+    CX -- "POST /memory/append<br/>POST /memory/recall<br/>MCP /mcp" --> SVC
 
     subgraph SVC["llamaindex-service — FastAPI (host :8800 → container :8000)"]
         REST["REST API"]

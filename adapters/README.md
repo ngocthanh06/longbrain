@@ -12,7 +12,8 @@ Two reference implementations ship in this repo:
 - `hooks/claude/` — Claude Code (4 lifecycle hooks, stdlib-only python)
 - `hooks/` — Hermes Desktop (`pre_llm_call.py`, `post_llm_call.py`,
   `on_session_end.py`, `on_session_start.py`)
-- `hooks/codex/` — Codex turn-ended notify sync (write-only lifecycle)
+- `hooks/codex/` — Codex official lifecycle hooks plus a legacy `notify`
+  write fallback
 
 `python_minimal/adapter.py` in this folder is a single-file skeleton to
 copy from.
@@ -39,7 +40,7 @@ lifecycle an agent's adapter can automate:
 |---|---|---|---|---|
 | Claude Code | ✅ | ✅ | ✅ | `./setup.sh` |
 | Hermes Desktop | ✅ | ✅ | ✅ | `./setup.sh` |
-| Codex | tools only | ✅ via `notify` | ❌ | `./setup.sh` (write adapter) |
+| Codex | ✅ | ✅ | catch-up on next start | `./setup.sh` (lifecycle adapter) |
 | Any MCP client | tools only | ❌ | ❌ | point it at `http://localhost:8800/mcp` |
 
 `./setup.sh` detects installed agents and wires each at the highest tier it

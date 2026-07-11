@@ -310,17 +310,22 @@ not installed):
 
 1. **MCP registration**: `[mcp_servers.longbrain]` in
    `~/.codex/config.toml`, pointing at `http://localhost:8800/mcp`.
-2. **Turn-ended recording**: wraps Codex's top-level `notify` command with
+2. **Official lifecycle hooks** in `~/.codex/hooks.json`:
+   `SessionStart` calls `/memory/consolidate-pending`; `UserPromptSubmit`
+   calls `/memory/recall` and returns bounded `additionalContext`; `Stop`
+   pairs the saved prompt with `last_assistant_message` and calls
+   `/memory/append` with `source_agent="codex"`.
+3. **Legacy write fallback**: wraps Codex's top-level `notify` command with
    `hooks/codex/turn_ended.py`. The hook scans recent rollout JSONL files
    under `~/.codex/sessions`, extracts real user prompts plus final assistant
    answers, and posts each completed turn to `/memory/append` with
    `source_agent="codex"`. Any previous notify command is chained, so existing
    Codex desktop notifications keep working.
 
-This is a **write adapter**, not a full lifecycle adapter: Codex chats are
-recorded automatically, and the model can call MCP tools, but there is still
-no pre-prompt hook for automatic recall injection or session-end hook for
-automatic consolidation.
+Codex now has automatic recall and recording. It still has no `SessionEnd`
+event, so consolidation uses the debounced `SessionStart` catch-up sweep
+rather than running exactly when a chat closes. Non-managed hooks must be
+reviewed and trusted once through Codex's `/hooks` UI.
 
 ## 8. Multi-agent operation & provenance
 
@@ -393,7 +398,7 @@ longbrain/
 ├── scripts/
 │   ├── configure_hermes.py      # auto-patch config.yaml + consent + serve bug + app restart
 │   ├── configure_claude.py      # auto-wire Claude Code (settings.json hooks + MCP registration)
-│   ├── configure_codex.py       # auto-wire Codex (MCP + turn-ended notify recording)
+│   ├── configure_codex.py       # auto-wire Codex (lifecycle hooks + MCP + notify fallback)
 │   ├── doctor.py                # read-only wiring + health check across all agents (--fix)
 │   ├── backup.sh                # Qdrant snapshots (nightly via launchd)
 │   ├── ingest_watcher.py        # auto-ingest each project's docs/ folder (60s poll via launchd)

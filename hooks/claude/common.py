@@ -37,6 +37,13 @@ from post_llm_call import resolve_project_with_source  # noqa: E402
 from project_catalog import record_project_folder  # noqa: E402
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Codex Desktop invents a scratch cwd per ad-hoc chat (no real workspace
+# opened) at ~/Documents/Codex/<date>/<slug-of-first-message-or-title> — e.g.
+# .../Documents/Codex/2026-07-11/hi-n-nay-khi-m-s. Folder-name resolution
+# below would happily slugify that invented leaf name and persist it as a
+# "real" project, producing junk projects (the chat's own title) instead of
+# the actual workspace. Detected and skipped -> falls through to "default".
+_CODEX_DESKTOP_SCRATCH_RE = re.compile(r"(^|/)Documents/Codex/\d{4}-\d{2}-\d{2}$")
 
 
 def env_get(name: str, default=None):
@@ -132,7 +139,9 @@ def resolve_project(cwd: str) -> tuple:
     # and says nothing about a Claude Code session — skip it, go by folder.
     if cwd:
         root = _git_root(cwd) or os.path.realpath(cwd)
-        if root not in (os.path.expanduser("~"), os.sep):
+        if root not in (os.path.expanduser("~"), os.sep) and not _CODEX_DESKTOP_SCRATCH_RE.search(
+            os.path.dirname(root)
+        ):
             folder_slug = _slugify(os.path.basename(root))
             if folder_slug:
                 # Hermes doesn't know this folder (no Hermes install, or the

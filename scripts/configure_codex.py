@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Wire Codex to the memory stack.
 
-Codex support has two parts:
+Codex support has three parts:
 1. register the MCP server so the model can actively call memory tools;
-2. wrap Codex's top-level `notify` command so each turn-ended notification
+2. register official lifecycle hooks for automatic recall, recording, and
+   session-start catch-up;
+3. wrap Codex's top-level `notify` command so each turn-ended notification
    syncs completed rollout turns into Longbrain.
 
 Run via setup.sh (or directly). Idempotent — safe to re-run.
@@ -30,11 +32,30 @@ REPO = Path(__file__).resolve().parent.parent
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", "")) if os.environ.get("CODEX_HOME") \
     else Path.home() / ".codex"
 CONFIG = CODEX_HOME / "config.toml"
+HOOKS_CONFIG = CODEX_HOME / "hooks.json"
 SECTION = "[mcp_servers.longbrain]"
 MCP_URL = "http://localhost:8800/mcp"
 URL_LINE = f'url = "{MCP_URL}"'
 HOOK_SCRIPT = REPO / "hooks" / "codex" / "turn_ended.py"
 NOTIFY_MARKER = "Longbrain Codex notify"
+LIFECYCLE_HOOKS = {
+    "SessionStart": {
+        "script": REPO / "hooks" / "codex" / "session_start.py",
+        "matcher": "startup|resume|clear|compact",
+        "timeout": 10,
+        "statusMessage": "Checking Longbrain",
+    },
+    "UserPromptSubmit": {
+        "script": REPO / "hooks" / "codex" / "user_prompt_submit.py",
+        "timeout": 10,
+        "statusMessage": "Recalling Longbrain memory",
+    },
+    "Stop": {
+        "script": REPO / "hooks" / "codex" / "stop.py",
+        "timeout": 10,
+        "statusMessage": "Recording turn in Longbrain",
+    },
+}
 
 ok_all = True
 
@@ -179,6 +200,85 @@ def _patch_notify(lines: list[str]) -> tuple[list[str], bool]:
     return new_lines, True
 
 
+def _lifecycle_handler(spec: dict) -> dict:
+    return {
+        "type": "command",
+        "command": f'python3 "{spec["script"]}"',
+        "timeout": spec["timeout"],
+        "statusMessage": spec["statusMessage"],
+    }
+
+
+def _is_lifecycle_command(command: str, script_name: str) -> bool:
+    normalized = command.replace("\\", "/")
+    return normalized.endswith(f'/hooks/codex/{script_name}"') or normalized.endswith(
+        f"/hooks/codex/{script_name}"
+    )
+
+
+def _merge_lifecycle_hooks(config: dict) -> tuple[dict, bool]:
+    hooks = config.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        fail(f"{HOOKS_CONFIG} field 'hooks' must be an object")
+        return config, False
+    changed = False
+
+    for event, spec in LIFECYCLE_HOOKS.items():
+        groups = hooks.setdefault(event, [])
+        if not isinstance(groups, list):
+            fail(f"{HOOKS_CONFIG} hooks.{event} must be an array")
+            continue
+        expected = _lifecycle_handler(spec)
+        found = False
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                continue
+            for index, handler in enumerate(group["hooks"]):
+                command = handler.get("command", "") if isinstance(handler, dict) else ""
+                if _is_lifecycle_command(command, spec["script"].name):
+                    if not found:
+                        if handler != expected:
+                            group["hooks"][index] = expected
+                            changed = True
+                        if spec.get("matcher") and group.get("matcher") != spec["matcher"]:
+                            group["matcher"] = spec["matcher"]
+                            changed = True
+                        found = True
+                    else:
+                        group["hooks"][index] = None
+                        changed = True
+            group["hooks"] = [handler for handler in group["hooks"] if handler is not None]
+        if not found:
+            group = {"hooks": [expected]}
+            if spec.get("matcher"):
+                group["matcher"] = spec["matcher"]
+            groups.append(group)
+            changed = True
+            note(f"registered Codex {event} lifecycle hook")
+    return config, changed
+
+
+def register_lifecycle_hooks() -> None:
+    try:
+        config = json.loads(HOOKS_CONFIG.read_text()) if HOOKS_CONFIG.exists() else {}
+    except json.JSONDecodeError:
+        fail(f"{HOOKS_CONFIG} is not valid JSON; lifecycle hooks left unchanged")
+        return
+    if not isinstance(config, dict):
+        fail(f"{HOOKS_CONFIG} must contain a JSON object")
+        return
+    config, changed = _merge_lifecycle_hooks(config)
+    if not changed:
+        note("Codex lifecycle hooks already registered")
+        return
+    if HOOKS_CONFIG.exists():
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        shutil.copyfile(HOOKS_CONFIG, HOOKS_CONFIG.with_name(f"hooks.json.bak.{stamp}"))
+    HOOKS_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    HOOKS_CONFIG.write_text(json.dumps(config, indent=2) + "\n")
+    note("hooks.json written (review/trust Longbrain hooks with /hooks in Codex)")
+
+
 def register_mcp() -> None:
     print(f"==> {CONFIG} (Codex wiring)")
     lines = CONFIG.read_text().splitlines() if CONFIG.exists() else []
@@ -237,10 +337,11 @@ def main() -> int:
         print("Codex not found (no `codex` on PATH, no ~/.codex) — nothing to do.")
         return 0
     register_mcp()
+    register_lifecycle_hooks()
     if ok_all:
-        print("✓ Codex wired (MCP tools + turn-ended chat recording).")
-        print("  Verify after a Codex turn: /health last_written_at should advance; "
-              "restart Codex sessions to pick config changes up.")
+        print("✓ Codex wired (lifecycle hooks + MCP + notify fallback).")
+        print("  Restart Codex, run /hooks once to trust the Longbrain hooks, then "
+              "finish a turn and verify with scripts/doctor.py.")
     else:
         print("✗ finished with problems (see above)")
     return 0 if ok_all else 1

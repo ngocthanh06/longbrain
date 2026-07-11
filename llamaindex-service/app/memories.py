@@ -59,6 +59,35 @@ def summary_point_id(user_id: str, session_id: str) -> str:
     return str(uuid.uuid5(_NAMESPACE, f"summary:{user_id}:{session_id}"))
 
 
+def _norm_key(s: str, as_relation: bool = False) -> str:
+    """Normalize a triple part into a matching key: matching is exact-string,
+    so casing/spacing/punctuation noise from the extracting LLM must not
+    break it. Relations become snake_case; subjects drop a leading article."""
+    s = " ".join(s.split()).casefold().rstrip(".,;:!?")
+    if as_relation:
+        s = re.sub(r"[\s\-]+", "_", s)
+    else:
+        s = re.sub(r"^(the|an|a)\s+", "", s)
+    return s
+
+
+def _triple_of(fact: dict) -> tuple[str, str, str] | None:
+    """Validated, normalized (subject, relation, object) from a fact dict.
+    The extracting LLM may emit anything here — a bad triple must never fail
+    the save, so any non-string, empty-after-normalization or oversized part
+    drops the whole triple while the fact itself is kept."""
+    parts = (fact.get("subject"), fact.get("relation"), fact.get("object"))
+    if not all(isinstance(p, str) for p in parts):
+        return None
+    subject, obj = _norm_key(parts[0]), _norm_key(parts[2])
+    relation = _norm_key(parts[1], as_relation=True)
+    if not (subject and relation and obj):
+        return None
+    if any(len(p) > 128 for p in (subject, relation, obj)):
+        return None
+    return subject, relation, obj
+
+
 def _active_filter(user_id: str, extra: list | None = None) -> qmodels.Filter:
     must = [
         qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
@@ -82,6 +111,29 @@ Answer with exactly one word: yes or no."""
 def _llm_confirms_duplicate(llm, new_text: str, existing_text: str) -> bool:
     try:
         answer = llm.complete(_DEDUP_PROMPT.format(a=new_text, b=existing_text)).text
+    except Exception:
+        return False  # best-effort — a flaky LLM call must not block saving
+    return answer.strip().lower().startswith("yes")
+
+
+_CONTRADICTION_PROMPT = """Fact A is an existing stored memory. Fact B is a new \
+memory being saved right now. Do they CONTRADICT each other — stating \
+different, mutually exclusive values for the same real-world thing (e.g. a \
+different preference, a different current status, a different answer to \
+the same question)? Do not count it as a contradiction if Fact B is simply \
+about a different topic, or is consistent with / additional to Fact A.
+
+Fact A (existing): {a}
+Fact B (new): {b}
+
+Answer with exactly one word: yes or no."""
+
+
+def _llm_flags_contradiction(llm, new_text: str, existing_text: str) -> bool:
+    try:
+        answer = llm.complete(
+            _CONTRADICTION_PROMPT.format(a=existing_text, b=new_text)
+        ).text
     except Exception:
         return False  # best-effort — a flaky LLM call must not block saving
     return answer.strip().lower().startswith("yes")
@@ -131,6 +183,55 @@ def save_facts(
 
         vector = embed_model.get_text_embedding(text)
 
+        # Triple-based supersession: same (subject, relation) with a different
+        # object is a CONTRADICTION ("uses pnpm" -> "switched to bun") that
+        # both cosine bands below miss — the texts score far apart, and the
+        # LLM band only detects rewordings. Same object supersedes too: a
+        # reconfirmed fact gets a fresh created_at instead of decaying from
+        # its original date. Scope mirrors recall co-visibility
+        # (search_memories): a fact may only retire what could have
+        # co-appeared with it — same project or the default project, plus
+        # preferences, which are global in recall.
+        superseded = []
+        superseded_ids = []
+        triple = _triple_of(fact) if config.TRIPLE_SUPERSEDE else None
+        if triple:
+            candidates, _ = client.scroll(
+                collection_name=config.MEMORIES_COLLECTION,
+                scroll_filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="user_id", match=qmodels.MatchValue(value=user_id)
+                        ),
+                        qmodels.IsEmptyCondition(
+                            is_empty=qmodels.PayloadField(key="superseded_by")
+                        ),
+                        qmodels.FieldCondition(
+                            key="triple_subject", match=qmodels.MatchValue(value=triple[0])
+                        ),
+                        qmodels.FieldCondition(
+                            key="triple_relation", match=qmodels.MatchValue(value=triple[1])
+                        ),
+                    ],
+                    should=[
+                        qmodels.FieldCondition(
+                            key="project_id",
+                            match=qmodels.MatchAny(any=[project_id, config.DEFAULT_PROJECT]),
+                        ),
+                        qmodels.FieldCondition(
+                            key="type", match=qmodels.MatchValue(value="preference")
+                        ),
+                    ],
+                ),
+                limit=16,
+                with_payload=["text"],
+            )
+            for cand in candidates:
+                if str(cand.id) == point_id:
+                    continue
+                superseded_ids.append(cand.id)
+                superseded.append(cand.payload.get("text", ""))
+
         # A near-identical active fact gets superseded (updated info wins).
         # Two bands: >=SUPERSEDE_SIMILARITY is close enough to auto-supersede
         # (near-exact text); the wider DEDUP_LLM_CHECK_MIN..SUPERSEDE_SIMILARITY
@@ -140,7 +241,6 @@ def save_facts(
         # Scope the supersede search to this fact's project: near-identical
         # facts in DIFFERENT projects are distinct knowledge, and letting one
         # retire the other silently loses the other project's memory.
-        superseded = []
         hits = client.search(
             collection_name=config.MEMORIES_COLLECTION,
             query_vector=vector,
@@ -153,17 +253,31 @@ def save_facts(
             score_threshold=config.DEDUP_LLM_CHECK_MIN,
             with_payload=["text"],
         )
+        best_relevant = None  # highest-scoring hit NOT judged a duplicate
         for hit in hits:
             is_dup = hit.score >= config.SUPERSEDE_SIMILARITY or (
                 llm is not None and _llm_confirms_duplicate(llm, text, hit.payload.get("text", ""))
             )
             if is_dup:
-                client.set_payload(
-                    collection_name=config.MEMORIES_COLLECTION,
-                    payload={"superseded_by": point_id},
-                    points=[hit.id],
-                )
+                superseded_ids.append(hit.id)
                 superseded.append(hit.payload.get("text", ""))
+            elif best_relevant is None:
+                best_relevant = hit
+
+        # Contradiction detector (third, weakest-signal tier): triple-
+        # supersede and the dedup band above already resolve the fact when
+        # they can. What's left — no matching triple, no dedup verdict — may
+        # still be a plain contradiction ("prefers dark mode" -> "prefers
+        # light mode") that both of those miss. Flag, don't auto-resolve:
+        # write a symmetric conflicts_with pointer on both facts and let the
+        # LLM/user reconcile. At most one LLM call per save.
+        contradicts_id = None
+        if (
+            config.CONTRADICTION_DETECTION and llm is not None and not triple
+            and best_relevant is not None
+            and _llm_flags_contradiction(llm, text, best_relevant.payload.get("text", ""))
+        ):
+            contradicts_id = str(best_relevant.id)
 
         now = time.time()
         payload = {
@@ -174,9 +288,16 @@ def save_facts(
             "text": text,
             "importance": importance,
             "created_at": now,
+            "last_seen": now,
         }
         if source_agent:
             payload["source_agent"] = source_agent
+        if triple:
+            payload["triple_subject"] = triple[0]
+            payload["triple_relation"] = triple[1]
+            payload["triple_object"] = triple[2]
+        if contradicts_id:
+            payload["conflicts_with"] = contradicts_id
         client.upsert(
             collection_name=config.MEMORIES_COLLECTION,
             points=[qmodels.PointStruct(
@@ -185,9 +306,25 @@ def save_facts(
                 payload=payload,
             )],
         )
+        # Old facts are only marked superseded/conflicting AFTER the new fact
+        # lands: if the upsert above had failed, doing this first would drop
+        # the old facts from recall while the replacement never existed.
+        if superseded_ids:
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"superseded_by": point_id},
+                points=superseded_ids,
+            )
+        if contradicts_id:
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"conflicts_with": point_id},
+                points=[contradicts_id],
+            )
         results.append(
             {"text": text, "status": "supersedes" if superseded else "new",
-             **({"superseded": superseded} if superseded else {})}
+             **({"superseded": superseded} if superseded else {}),
+             **({"conflicts_with": contradicts_id} if contradicts_id else {})}
         )
     return results
 
@@ -292,6 +429,13 @@ def search_memories(
     flt.must_not = [
         qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary"))
     ]
+    if config.HIDE_DONE_TASKS:
+        # A closed task is done, not deleted/superseded — stop surfacing it
+        # in recall the same way a superseded fact stops surfacing. Absent
+        # field never matches "done", so non-task facts are unaffected.
+        flt.must_not.append(
+            qmodels.FieldCondition(key="status", match=qmodels.MatchValue(value="done"))
+        )
     if project:
         # Scope: project-anchored knowledge (facts/decisions/tasks) from
         # OTHER projects stays out of auto-recall — asking about project A
@@ -321,7 +465,11 @@ def search_memories(
     for e in hybrid.fuse(dense_hits, sparse_hits):
         payload = e["payload"]
         importance = payload.get("importance", 0.5)
-        age = max(now - (payload.get("created_at") or now), 0.0)
+        # Decay runs off last_seen, not created_at: recalling a fact is
+        # itself evidence it's still relevant (see config.LAST_SEEN_REFRESH).
+        # Facts saved before this field existed fall back to created_at.
+        last_seen = payload.get("last_seen") or payload.get("created_at") or now
+        age = max(now - last_seen, 0.0)
         final = e["similarity"] * _decay(age, config.MEMORY_HALF_LIFE_DAYS) * (0.5 + 0.5 * importance)
         hit_project = payload.get("project_id") or config.DEFAULT_PROJECT
         if project and hit_project == project:
@@ -339,13 +487,22 @@ def search_memories(
                 "project_id": hit_project,
                 "importance": importance,
                 "created_at": payload.get("created_at"),
+                "last_seen": last_seen,
                 "source_agent": payload.get("source_agent") or "",
+                "conflicts_with": payload.get("conflicts_with"),
                 "similarity": e["similarity"],
                 "score": final,
             }
         )
     scored.sort(key=lambda m: m["score"], reverse=True)
-    return [m for m in scored if m["score"] >= config.RECALL_MIN_SCORE][:top_k]
+    top = [m for m in scored if m["score"] >= config.RECALL_MIN_SCORE][:top_k]
+    if config.LAST_SEEN_REFRESH and top:
+        client.set_payload(
+            collection_name=config.MEMORIES_COLLECTION,
+            payload={"last_seen": now},
+            points=[m["id"] for m in top],
+        )
+    return top
 
 
 def list_facts(
@@ -354,6 +511,7 @@ def list_facts(
     project: str | None = None,
     ftype: str | None = None,
     include_superseded: bool = False,
+    include_done: bool = False,
     limit: int = 200,
 ) -> list[dict]:
     must = [
@@ -366,12 +524,17 @@ def list_facts(
     if ftype:
         must.append(qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value=ftype)))
     flt = qmodels.Filter(must=must)
+    flt.must_not = []
     if ftype != "session_summary":
         # Summaries are per-session artifacts, not facts — keep them out of
         # the /ui graph and fact listings unless asked for explicitly.
-        flt.must_not = [
+        flt.must_not.append(
             qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary"))
-        ]
+        )
+    if not include_done:
+        flt.must_not.append(
+            qmodels.FieldCondition(key="status", match=qmodels.MatchValue(value="done"))
+        )
     points, _ = client.scroll(
         collection_name=config.MEMORIES_COLLECTION,
         scroll_filter=flt,
@@ -388,11 +551,85 @@ def list_facts(
             "project_id": p.payload.get("project_id") or config.DEFAULT_PROJECT,
             "importance": p.payload.get("importance", 0.5),
             "created_at": p.payload.get("created_at"),
+            "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "superseded_by": p.payload.get("superseded_by"),
+            "status": p.payload.get("status"),
+            "conflicts_with": p.payload.get("conflicts_with"),
             "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points
     ]
+
+
+def health_stats(client: QdrantClient, user_id: str = config.USER_ID) -> dict:
+    """At-a-glance counts for the /ui health panel: no new storage, no
+    time-series — "growth" is approximated from created_at on facts already
+    on disk. Consolidation backlog is NOT included here (would need
+    importing scheduler, which imports consolidation, which imports this
+    module — a cycle); the /memory/stats endpoint merges it in."""
+    must = [qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id))]
+    flt = qmodels.Filter(must=must, must_not=[
+        qmodels.FieldCondition(key="type", match=qmodels.MatchValue(value="session_summary")),
+    ])
+    points = []
+    offset = None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=config.MEMORIES_COLLECTION,
+            scroll_filter=flt,
+            limit=256,
+            offset=offset,
+            with_payload=["type", "superseded_by", "created_at", "project_id",
+                          "status", "conflicts_with"],
+            with_vectors=False,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    now = time.time()
+    by_type: dict[str, int] = {}
+    by_project: dict[str, int] = {}
+    total_active = total_superseded = 0
+    new_24h = new_7d = 0
+    open_tasks = done_tasks = 0
+    flagged_conflicts = 0
+    for p in points:
+        payload = p.payload
+        if payload.get("superseded_by"):
+            total_superseded += 1
+            continue
+        total_active += 1
+        ftype = payload.get("type", "fact")
+        by_type[ftype] = by_type.get(ftype, 0) + 1
+        project = payload.get("project_id") or config.DEFAULT_PROJECT
+        by_project[project] = by_project.get(project, 0) + 1
+        created_at = payload.get("created_at")
+        if created_at:
+            age = now - created_at
+            if age <= 86400:
+                new_24h += 1
+            if age <= 7 * 86400:
+                new_7d += 1
+        if ftype == "task":
+            done_tasks += 1 if payload.get("status") == "done" else 0
+            open_tasks += 1 if payload.get("status") != "done" else 0
+        if payload.get("conflicts_with"):
+            flagged_conflicts += 1
+
+    total = total_active + total_superseded
+    return {
+        "total_active": total_active,
+        "total_superseded": total_superseded,
+        "superseded_ratio": round(total_superseded / total, 4) if total else 0.0,
+        "by_type": by_type,
+        "by_project": by_project,
+        "new_last_24h": new_24h,
+        "new_last_7d": new_7d,
+        "open_tasks": open_tasks,
+        "done_tasks": done_tasks,
+        "flagged_conflicts": flagged_conflicts,
+    }
 
 
 def set_fact_project(client: QdrantClient, fact_id: str, project_id: str) -> bool:
@@ -424,6 +661,27 @@ def set_fact_type(client: QdrantClient, fact_id: str, ftype: str) -> bool:
     client.set_payload(
         collection_name=config.MEMORIES_COLLECTION,
         payload={"type": ftype},
+        points=[fact_id],
+    )
+    return True
+
+
+VALID_STATUSES = {"open", "done"}
+
+
+def set_fact_status(client: QdrantClient, fact_id: str, status: str) -> bool:
+    """Close/reopen a task fact (/ui action). False if the id is unknown or
+    status isn't open/done. No status set means "open" (see HIDE_DONE_TASKS)."""
+    if status not in VALID_STATUSES:
+        return False
+    existing = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION, ids=[fact_id], with_payload=False
+    )
+    if not existing:
+        return False
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"status": status},
         points=[fact_id],
     )
     return True
@@ -468,6 +726,68 @@ def set_session_facts_project(
     return count
 
 
+def entity_graph_data(client: QdrantClient, user_id: str = config.USER_ID) -> dict:
+    """Entities and relations from fact triples, for the /ui graph's entity
+    mode. Nodes are the distinct subjects/objects of active triple-bearing
+    facts; each fact contributes one labelled edge. Node shape matches
+    graph_data so the Canvas renderer needs no new code."""
+    from collections import Counter
+
+    flt = qmodels.Filter(
+        must=[
+            qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id)),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")),
+        ],
+        must_not=[
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="triple_subject")),
+        ],
+    )
+    points, offset = [], None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=config.MEMORIES_COLLECTION, scroll_filter=flt,
+            limit=256, offset=offset, with_payload=True,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    degree: Counter = Counter()
+    projects: dict[str, Counter] = {}
+    edges = []
+    for p in points:
+        subject = p.payload.get("triple_subject", "")
+        obj = p.payload.get("triple_object", "")
+        project = p.payload.get("project_id") or config.DEFAULT_PROJECT
+        edges.append({
+            "source": f"ent:{subject}",
+            "target": f"ent:{obj}",
+            "weight": 0.8,
+            "label": p.payload.get("triple_relation", ""),
+            "fact_id": str(p.id),
+        })
+        for name in (subject, obj):
+            degree[name] += 1
+            projects.setdefault(name, Counter())[project] += 1
+
+    nodes = [
+        {
+            "id": f"ent:{name}",
+            "text": name,
+            "type": "entity",
+            "project_id": projects[name].most_common(1)[0][0],
+            "importance": min(1.0, degree[name] / 5),
+            "created_at": None,
+            "session_id": "",
+            "superseded": False,
+            "source_agent": "",
+            "topic": None,
+        }
+        for name in degree
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
 def delete_fact(client: QdrantClient, fact_id: str) -> bool:
     """Hard-delete a fact (user-initiated forget — distinct from supersede,
     which is the natural update path and keeps provenance)."""
@@ -500,6 +820,39 @@ def delete_all_facts(client: QdrantClient, user_id: str = config.USER_ID) -> int
     return count
 
 
+def _cluster_topics(nodes: list[dict], sims, threshold: float) -> None:
+    """Connected-components over `sims`, scoped to same-project pairs above
+    `threshold`. Writes nodes[i]["topic"] in place; clusters of size < 2
+    keep topic=None (nothing to group). Stable ordering (by descending
+    cluster size, tie-broken by the cluster's smallest node id) so reloads
+    don't reshuffle which cluster is "t0" vs "t1"."""
+    n = len(nodes)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if nodes[i]["project_id"] == nodes[j]["project_id"] and sims[i][j] >= threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    clusters = [members for members in groups.values() if len(members) >= 2]
+    clusters.sort(key=lambda members: (-len(members), nodes[members[0]]["id"]))
+    for rank, members in enumerate(clusters):
+        topic_id = f"{nodes[members[0]]['project_id']}::t{rank}"
+        for idx in members:
+            nodes[idx]["topic"] = topic_id
+
+
 def graph_data(
     client: QdrantClient,
     user_id: str = config.USER_ID,
@@ -507,6 +860,7 @@ def graph_data(
     top_edges: int = 4,
     min_similarity: float = 0.35,
     limit: int = 2000,
+    topic_min_similarity: float | None = None,
 ) -> dict:
     """Nodes + similarity edges over the fact collection, for the /ui graph.
 
@@ -547,9 +901,13 @@ def graph_data(
             "project_id": p.payload.get("project_id") or config.DEFAULT_PROJECT,
             "importance": p.payload.get("importance", 0.5),
             "created_at": p.payload.get("created_at"),
+            "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "session_id": p.payload.get("session_id") or "",
             "superseded": bool(p.payload.get("superseded_by")),
+            "status": p.payload.get("status"),
+            "conflicts_with": p.payload.get("conflicts_with"),
             "source_agent": p.payload.get("source_agent") or "",
+            "topic": None,
         }
         for p in points
     ]
@@ -586,6 +944,14 @@ def graph_data(
                          "weight": round(float(sims[i][j]), 4)}
                     )
                 kept += 1
+
+        if config.GRAPH_TOPIC_CLUSTERING:
+            _cluster_topics(
+                nodes, sims,
+                topic_min_similarity
+                if topic_min_similarity is not None
+                else config.GRAPH_TOPIC_MIN_SIMILARITY,
+            )
 
     return {"nodes": nodes, "edges": edges}
 
@@ -660,11 +1026,19 @@ def recall(
     def _agent(entry: dict) -> str:
         return f", {entry['source_agent']}" if entry.get("source_agent") else ""
 
+    # Flagged by the contradiction detector (save_facts) — surfaced, not
+    # auto-resolved, so the reader can ask the user which one is current.
+    def _conflict(entry: dict) -> str:
+        return (
+            " [note: conflicts with another stored fact — verify with the user]"
+            if entry.get("conflicts_with") else ""
+        )
+
     lines: list[str] = []
     if mems:
         lines.append("[Long-term memories]")
         lines += [
-            f"- ({m['type']}, {_fmt_date(m['created_at'])}{_agent(m)}) {m['text']}"
+            f"- ({m['type']}, {_fmt_date(m['created_at'])}{_agent(m)}) {m['text']}{_conflict(m)}"
             for m in mems
         ]
     if summaries:

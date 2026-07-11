@@ -19,6 +19,19 @@ def _load_turn_ended():
 turn_ended = _load_turn_ended()
 
 
+def _load_codex_hook(name):
+    path = Path(__file__).resolve().parents[2] / "hooks" / "codex" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"codex_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+user_prompt_submit = _load_codex_hook("user_prompt_submit")
+codex_stop = _load_codex_hook("stop")
+session_start = _load_codex_hook("session_start")
+
+
 def _write_rollout(path, entries):
     path.write_text("\n".join(json.dumps(e) for e in entries))
     return path
@@ -73,6 +86,43 @@ def test_extract_completed_turns_keeps_html_like_prompt(tmp_path):
     assert turn_ended.extract_completed_turns(rollout)[0]["user_message"] == (
         "<div>Build this component</div>"
     )
+
+
+def test_extract_completed_turns_skips_guardian_subagent_rollout(tmp_path):
+    # Codex's internal safety risk-assessment threads (thread_source
+    # "subagent", source.subagent.other "guardian") are synthetic
+    # "approval assessment" prompts answered with a risk_level/outcome JSON
+    # blob — not real user conversation. Must not be recorded as history.
+    rollout = _write_rollout(tmp_path / "rollout.jsonl", [
+        {"type": "session_meta", "payload": {
+            "session_id": "session123", "cwd": str(tmp_path),
+            "thread_source": "subagent", "source": {"subagent": {"other": "guardian"}},
+        }},
+        _msg("user", "The following is the Codex agent history added since your "
+                      "last approval assessment. Continue the same review...", "t1"),
+        _msg("assistant", '{"risk_level":"medium","user_authorization":"high","outcome":"allow"}',
+             "t1", phase="final_answer"),
+    ])
+
+    assert turn_ended.extract_completed_turns(rollout) == []
+
+
+def test_extract_completed_turns_keeps_real_user_thread(tmp_path):
+    rollout = _write_rollout(tmp_path / "rollout.jsonl", [
+        {"type": "session_meta", "payload": {
+            "session_id": "session123", "cwd": str(tmp_path), "thread_source": "user",
+        }},
+        _msg("user", "real prompt", "t1"),
+        _msg("assistant", "final answer", "t1", phase="final_answer"),
+    ])
+
+    assert turn_ended.extract_completed_turns(rollout) == [{
+        "session_id": "session123",
+        "turn_id": "t1",
+        "cwd": str(tmp_path),
+        "user_message": "real prompt",
+        "assistant_response": "final answer",
+    }]
 
 
 def _patch_target(monkeypatch, path):
@@ -198,3 +248,73 @@ def test_sync_state_distinguishes_extracted_from_recorded(tmp_path, monkeypatch)
     state = json.loads(state_file.read_text())
     assert len(state["processed"]) == 1
     assert state["last_successful_write_at"] > 0
+
+
+def test_lifecycle_recall_saves_prompt_and_injects_context(monkeypatch, capsys):
+    saved = []
+    state = []
+    monkeypatch.setattr(user_prompt_submit, "read_payload", lambda: {
+        "session_id": "s1", "turn_id": "t1", "cwd": "/repo", "prompt": "find old decision",
+    })
+    monkeypatch.setattr(user_prompt_submit, "save_pending_prompt", lambda p, q: saved.append((p, q)))
+    monkeypatch.setattr(user_prompt_submit, "resolve_project", lambda _cwd: ("repo", "folder"))
+    monkeypatch.setattr(user_prompt_submit, "post_json", lambda _path, _body, timeout: {
+        "context_block": "remember this",
+    })
+    monkeypatch.setattr(user_prompt_submit, "update_state", lambda **values: state.append(values))
+
+    user_prompt_submit.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert saved[0][1] == "find old decision"
+    assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "remember this" in output["hookSpecificOutput"]["additionalContext"]
+    assert state[-1]["last_recall_ok"] is True
+
+
+def test_lifecycle_stop_records_pending_turn(monkeypatch, capsys):
+    posted = []
+    removed = []
+    monkeypatch.setattr(codex_stop, "read_payload", lambda: {
+        "session_id": "s1", "turn_id": "t1", "cwd": "/repo",
+        "last_assistant_message": "final answer",
+    })
+    monkeypatch.setattr(codex_stop, "load_pending_prompt", lambda _s, _t: {"prompt": "question"})
+    monkeypatch.setattr(codex_stop, "resolve_project", lambda _cwd: ("repo", "folder"))
+    monkeypatch.setattr(codex_stop, "post_json", lambda path, body: posted.append((path, body)) or {"status": "ok"})
+    monkeypatch.setattr(codex_stop, "remove_pending_prompt", lambda s, t: removed.append((s, t)))
+    monkeypatch.setattr(codex_stop, "update_state", lambda **_values: None)
+
+    codex_stop.main()
+
+    assert json.loads(capsys.readouterr().out) == {"continue": True}
+    assert posted[0][1]["user_message"] == "question"
+    assert posted[0][1]["assistant_response"] == "final answer"
+    assert posted[0][1]["source_agent"] == "codex"
+    assert removed == [("s1", "t1")]
+
+
+def test_configure_codex_merges_lifecycle_hooks_and_preserves_user_hooks(tmp_path, monkeypatch):
+    target = tmp_path / "hooks.json"
+    target.write_text(json.dumps({
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "user-notifier"}]}]},
+        "custom": True,
+    }))
+    monkeypatch.setattr(configure_codex, "HOOKS_CONFIG", target)
+    monkeypatch.setattr(configure_codex, "LIFECYCLE_HOOKS", {
+        event: {**spec, "script": Path("/repo/hooks/codex") / spec["script"].name}
+        for event, spec in configure_codex.LIFECYCLE_HOOKS.items()
+    })
+    monkeypatch.setattr(configure_codex, "ok_all", True)
+
+    configure_codex.register_lifecycle_hooks()
+    first = target.read_text()
+    configure_codex.register_lifecycle_hooks()
+    config = json.loads(target.read_text())
+
+    assert target.read_text() == first
+    assert config["custom"] is True
+    assert "user-notifier" in first
+    assert "/repo/hooks/codex/session_start.py" in first
+    assert "/repo/hooks/codex/user_prompt_submit.py" in first
+    assert "/repo/hooks/codex/stop.py" in first

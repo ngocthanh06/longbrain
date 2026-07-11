@@ -121,7 +121,9 @@ def ensure_all(client: QdrantClient, embed_dim: int) -> None:
         client,
         config.MEMORIES_COLLECTION,
         {"user_id": keyword, "session_id": keyword, "type": keyword,
-         "project_id": keyword, "created_at": ts, "superseded_by": keyword},
+         "project_id": keyword, "created_at": ts, "last_seen": ts,
+         "superseded_by": keyword, "status": keyword,
+         "triple_subject": keyword, "triple_relation": keyword},
     )
 
     # The documents collection is created here too (LlamaIndex's

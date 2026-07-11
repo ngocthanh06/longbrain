@@ -2,9 +2,11 @@
 mode gives the actual filter/search semantics without a server."""
 
 import math
+import time
 
 import pytest
 from qdrant_client import QdrantClient
+from qdrant_client import models as qmodels
 
 from app import config, memories, memory_store, qdrant_setup
 from tests.conftest import FakeEmbed, FakeLLM
@@ -108,6 +110,275 @@ def test_save_facts_without_llm_skips_dedup_band(client):
 
 
 # ---------------------------------------------------------------------------
+# save_facts: contradiction detector — third, weakest-signal tier after
+# triple-supersede and cosine-dedup. Flags, never auto-resolves.
+# ---------------------------------------------------------------------------
+def test_save_facts_llm_flags_contradiction_in_dedup_band(client):
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),  # in-band, not near-exact
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    r = memories.save_facts(
+        client, embed, [{"text": "User now prefers light mode"}], llm=llm
+    )
+    assert r[0]["status"] == "new"
+    assert r[0]["conflicts_with"]
+
+    facts = {f["text"]: f for f in memories.list_facts(client)}
+    assert facts["User prefers dark mode"]["superseded_by"] is None
+    assert (facts["User prefers dark mode"]["conflicts_with"]
+            == facts["User now prefers light mode"]["id"])
+    assert (facts["User now prefers light mode"]["conflicts_with"]
+            == facts["User prefers dark mode"]["id"])
+
+
+def test_save_facts_no_contradiction_stays_plain(client):
+    embed = FakeEmbed({
+        "User likes Qdrant": _unit(0),
+        "Something loosely related to Qdrant": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "User likes Qdrant"}])
+    llm = FakeLLM("no")
+    r = memories.save_facts(
+        client, embed, [{"text": "Something loosely related to Qdrant"}], llm=llm
+    )
+    assert "conflicts_with" not in r[0]
+    assert all(f.get("conflicts_with") is None for f in memories.list_facts(client))
+
+
+def test_save_facts_contradiction_skipped_without_llm(client):
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    r = memories.save_facts(client, embed, [{"text": "User now prefers light mode"}])
+    assert "conflicts_with" not in r[0]
+
+
+def test_save_facts_contradiction_disabled_via_config(client, monkeypatch):
+    monkeypatch.setattr(config, "CONTRADICTION_DETECTION", False)
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    r = memories.save_facts(
+        client, embed, [{"text": "User now prefers light mode"}], llm=llm
+    )
+    assert "conflicts_with" not in r[0]
+    assert not any("CONTRADICT" in c for c in llm.calls)
+
+
+def test_save_facts_triple_supersede_skips_contradiction_check(client):
+    # A has no triple but sits in the cosine dedup band of B; B carries a
+    # triple that matches nothing existing (triple-supersede finds no
+    # candidate). The contradiction check must still be skipped for B
+    # because it has a triple, even though best_relevant (A) exists.
+    embed = FakeEmbed({
+        "Something in the dedup band": _unit(0),
+        "A fresh fact with its own triple": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "Something in the dedup band"}])
+    llm = FakeLLM("no")  # keeps the dedup band from superseding either side
+    r = memories.save_facts(client, embed, [{
+        "text": "A fresh fact with its own triple",
+        "subject": "user", "relation": "favorite_color", "object": "blue",
+    }], llm=llm)
+    assert r[0]["status"] == "new"
+    assert "conflicts_with" not in r[0]
+    assert not any("CONTRADICT" in c for c in llm.calls)
+
+
+def test_recall_surfaces_conflict_warning(client):
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),
+        "what theme does the user like": _unit(0),
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    memories.save_facts(
+        client, embed, [{"text": "User now prefers light mode"}], llm=llm
+    )
+    result = memories.recall(client, embed, "what theme does the user like")
+    assert "conflicts with another stored fact" in result["context_block"]
+
+
+# ---------------------------------------------------------------------------
+# save_facts: triple-based supersession — contradictions the cosine bands
+# miss (same subject+relation, different object). Vectors are kept 60° apart
+# (cos ≈ 0.5 < DEDUP_LLM_CHECK_MIN) so the cosine paths provably never fire.
+# ---------------------------------------------------------------------------
+def test_triple_supersedes_contradiction(client):
+    embed = FakeEmbed({
+        "User uses pnpm as package manager": _unit(0),
+        "User switched the whole stack over to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "User uses pnpm as package manager",
+         "subject": "user", "relation": "package_manager", "object": "pnpm"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User switched the whole stack over to bun",
+         "subject": "user", "relation": "package_manager", "object": "bun"},
+    ])
+    assert r[0]["status"] == "supersedes"
+    assert r[0]["superseded"] == ["User uses pnpm as package manager"]
+
+    hits = memories.search_memories(client, embed, "User uses pnpm as package manager", top_k=5)
+    texts = [h["text"] for h in hits]
+    assert "User switched the whole stack over to bun" in texts
+    assert "User uses pnpm as package manager" not in texts
+
+
+def test_triple_same_object_supersedes_and_keeps_provenance(client):
+    embed = FakeEmbed({
+        "Primary language is Go": _unit(0),
+        "User confirmed Go stays the primary language": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Primary language is Go",
+         "subject": "user", "relation": "primary_language", "object": "go"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User confirmed Go stays the primary language",
+         "subject": "user", "relation": "primary_language", "object": "go"},
+    ])
+    assert r[0]["status"] == "supersedes"
+    old_id = memories.fact_point_id(
+        config.USER_ID, "Primary language is Go", config.DEFAULT_PROJECT
+    )
+    old = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION, ids=[old_id], with_payload=True
+    )[0]
+    assert old.payload["superseded_by"]
+
+
+def test_triple_garbage_never_fails_the_save(client):
+    embed = FakeEmbed({"fact a": _unit(0), "fact b": _unit(60), "fact c": _unit(120)})
+    r = memories.save_facts(client, embed, [
+        {"text": "fact a", "subject": "user"},  # missing keys
+        {"text": "fact b", "subject": 42, "relation": "x", "object": "y"},  # non-string
+        {"text": "fact c", "subject": "  ", "relation": "x", "object": "y"},  # empty after norm
+    ])
+    assert [x["status"] for x in r] == ["new", "new", "new"]
+    b = client.retrieve(
+        collection_name=config.MEMORIES_COLLECTION,
+        ids=[memories.fact_point_id(config.USER_ID, "fact b", config.DEFAULT_PROJECT)],
+        with_payload=True,
+    )[0]
+    assert "triple_subject" not in b.payload
+
+
+def test_triple_matching_is_normalized(client):
+    embed = FakeEmbed({
+        "Package manager is pnpm": _unit(0),
+        "Moved everything to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Package manager is pnpm",
+         "subject": "user", "relation": "package_manager", "object": "pnpm"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "Moved everything to bun",
+         "subject": " The User ", "relation": "Package Manager", "object": "Bun"},
+    ])
+    assert r[0]["status"] == "supersedes"
+
+
+def test_triple_not_superseded_across_plain_projects(client):
+    # Non-preference facts in another (non-default) project can never
+    # co-appear in recall with the new fact, so they must not be retired.
+    embed = FakeEmbed({
+        "Alpha uses MySQL": _unit(0),
+        "Alpha uses PostgreSQL per beta's notes": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Alpha uses MySQL",
+         "subject": "alpha", "relation": "database", "object": "mysql"},
+    ], project_id="alpha")
+    r = memories.save_facts(client, embed, [
+        {"text": "Alpha uses PostgreSQL per beta's notes",
+         "subject": "alpha", "relation": "database", "object": "postgres"},
+    ], project_id="beta")
+    assert r[0]["status"] == "new"
+
+
+def test_triple_preference_superseded_globally(client):
+    # Preferences are global in recall, so a stale one must be reachable
+    # from any project.
+    embed = FakeEmbed({
+        "Comments in Vietnamese": _unit(0),
+        "Comments in English from now on": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Comments in Vietnamese", "type": "preference",
+         "subject": "user", "relation": "comment_language", "object": "vi"},
+    ], project_id="beta")
+    r = memories.save_facts(client, embed, [
+        {"text": "Comments in English from now on", "type": "preference",
+         "subject": "user", "relation": "comment_language", "object": "en"},
+    ], project_id="alpha")
+    assert r[0]["status"] == "supersedes"
+
+
+def test_triple_default_project_superseded_from_any_project(client):
+    embed = FakeEmbed({
+        "Editor is vim": _unit(0),
+        "Editor is now zed": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "Editor is vim",
+         "subject": "user", "relation": "editor", "object": "vim"},
+    ])  # default project
+    r = memories.save_facts(client, embed, [
+        {"text": "Editor is now zed",
+         "subject": "user", "relation": "editor", "object": "zed"},
+    ], project_id="alpha")
+    assert r[0]["status"] == "supersedes"
+
+
+def test_triple_supersede_disabled_by_flag(client, monkeypatch):
+    monkeypatch.setattr(config, "TRIPLE_SUPERSEDE", False)
+    embed = FakeEmbed({
+        "User uses pnpm as package manager": _unit(0),
+        "User switched the whole stack over to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "User uses pnpm as package manager",
+         "subject": "user", "relation": "package_manager", "object": "pnpm"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User switched the whole stack over to bun",
+         "subject": "user", "relation": "package_manager", "object": "bun"},
+    ])
+    assert r[0]["status"] == "new"
+
+
+def test_triple_leaves_legacy_facts_alone(client):
+    # A legacy fact saved without a triple has no matching key — the new
+    # triple-bearing fact must not touch it (cosine fallback still governs).
+    embed = FakeEmbed({
+        "User uses pnpm as package manager": _unit(0),
+        "User switched the whole stack over to bun": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "User uses pnpm as package manager"},
+    ])
+    r = memories.save_facts(client, embed, [
+        {"text": "User switched the whole stack over to bun",
+         "subject": "user", "relation": "package_manager", "object": "bun"},
+    ])
+    assert r[0]["status"] == "new"
+    hits = memories.search_memories(client, embed, "User uses pnpm as package manager", top_k=5)
+    assert "User uses pnpm as package manager" in [h["text"] for h in hits]
+
+
+# ---------------------------------------------------------------------------
 # save_facts: meta-about-the-assistant filter (belt and braces on the
 # consolidation prompt's own exclusion rule)
 # ---------------------------------------------------------------------------
@@ -170,6 +441,88 @@ def test_search_applies_min_score(client):
 
 
 # ---------------------------------------------------------------------------
+# last_seen: recall refreshes the decay clock (config.LAST_SEEN_REFRESH)
+# ---------------------------------------------------------------------------
+def test_search_memories_refreshes_last_seen_on_hit(client):
+    embed = FakeEmbed({"old fact": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "old fact"}])
+    facts = memories.list_facts(client)
+    fact_id = facts[0]["id"]
+    backdated = facts[0]["created_at"] - 60 * 86400
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"created_at": backdated, "last_seen": backdated},
+        points=[fact_id],
+    )
+    memories.search_memories(client, embed, "the query", top_k=5)
+    refreshed = memories.list_facts(client)[0]
+    assert refreshed["last_seen"] > backdated + 30 * 86400
+
+
+def test_decay_uses_last_seen_not_created_at(client):
+    # Same embedding for both facts (isolates the decay math from
+    # similarity); different projects so the save-time supersede check
+    # (scoped to one project) doesn't collapse them into one fact.
+    embed = FakeEmbed({
+        "seen recently": _unit(0),
+        "seen long ago": _unit(0),
+        "the query": _unit(0),
+    })
+    memories.save_facts(client, embed, [{"text": "seen recently"}], project_id="p1")
+    memories.save_facts(client, embed, [{"text": "seen long ago"}], project_id="p2")
+    old_age = 60 * 86400
+    for f in memories.list_facts(client):
+        if f["text"] == "seen long ago":
+            backdated = f["created_at"] - old_age
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"created_at": backdated, "last_seen": backdated},
+                points=[f["id"]],
+            )
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    scores = {h["text"]: h["score"] for h in hits}
+    assert scores["seen recently"] > scores["seen long ago"]
+
+
+def test_last_seen_refresh_disabled_via_config(client, monkeypatch):
+    monkeypatch.setattr(config, "LAST_SEEN_REFRESH", False)
+    embed = FakeEmbed({"old fact": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "old fact"}])
+    facts = memories.list_facts(client)
+    fact_id = facts[0]["id"]
+    backdated = facts[0]["created_at"] - 200 * 86400
+    client.set_payload(
+        collection_name=config.MEMORIES_COLLECTION,
+        payload={"created_at": backdated, "last_seen": backdated},
+        points=[fact_id],
+    )
+    memories.search_memories(client, embed, "the query", top_k=5)
+    refreshed = memories.list_facts(client)[0]
+    assert refreshed["last_seen"] == backdated
+
+
+def test_search_memories_backward_compatible_without_last_seen(client):
+    # Simulates a fact saved before this field existed: no last_seen key.
+    embed = FakeEmbed({"legacy fact": _unit(0), "the query": _unit(0)})
+    vector = embed.get_text_embedding("legacy fact")
+    client.upsert(
+        collection_name=config.MEMORIES_COLLECTION,
+        points=[qmodels.PointStruct(
+            id="11111111-1111-1111-1111-111111111111",
+            vector=vector,
+            payload={
+                "user_id": config.USER_ID, "session_id": "s1",
+                "project_id": config.DEFAULT_PROJECT, "type": "fact",
+                "text": "legacy fact", "importance": 0.5,
+                "created_at": time.time() - 10 * 86400,
+            },
+        )],
+    )
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    assert [h["text"] for h in hits] == ["legacy fact"]
+
+
+# ---------------------------------------------------------------------------
 # L2: idempotent append + consolidated roundtrip
 # ---------------------------------------------------------------------------
 def test_add_message_idempotent(client):
@@ -224,6 +577,117 @@ def test_graph_data_excludes_superseded_by_default(client):
     g_all = memories.graph_data(client, include_superseded=True)
     assert len(g_all["nodes"]) == 2
     assert sum(1 for n in g_all["nodes"] if n["superseded"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# graph_data: topic sub-clustering (connected-components over similarity,
+# no LLM, no new payload field — see config.GRAPH_TOPIC_CLUSTERING)
+# ---------------------------------------------------------------------------
+def test_graph_data_clusters_similar_facts_same_topic(client):
+    embed = FakeEmbed({
+        "fact A": _unit(0),
+        "fact B": _unit(30),  # cos(30°)≈0.87: above GRAPH_TOPIC_MIN_SIMILARITY
+                               # (0.55), below SUPERSEDE_SIMILARITY (0.92)
+        "fact C": _unit(90),  # cos(90°)=0: below threshold, no cluster
+    })
+    memories.save_facts(
+        client, embed,
+        [{"text": "fact A"}, {"text": "fact B"}, {"text": "fact C"}],
+        project_id="p1",
+    )
+    g = memories.graph_data(client)
+    topics = {n["text"]: n["topic"] for n in g["nodes"]}
+    assert topics["fact A"] == topics["fact B"]
+    assert topics["fact A"] is not None
+    assert topics["fact C"] is None
+
+
+def test_graph_data_topic_scoped_to_project(client):
+    embed = FakeEmbed({"fact A": _unit(0), "fact B": _unit(30)})
+    memories.save_facts(client, embed, [{"text": "fact A"}], project_id="p1")
+    memories.save_facts(client, embed, [{"text": "fact B"}], project_id="p2")
+    g = memories.graph_data(client)
+    topics = {n["text"]: n["topic"] for n in g["nodes"]}
+    assert topics["fact A"] is None
+    assert topics["fact B"] is None
+
+
+def test_graph_data_topic_clustering_disabled_via_config(client, monkeypatch):
+    monkeypatch.setattr(config, "GRAPH_TOPIC_CLUSTERING", False)
+    embed = FakeEmbed({"fact A": _unit(0), "fact B": _unit(30)})
+    memories.save_facts(
+        client, embed, [{"text": "fact A"}, {"text": "fact B"}], project_id="p1"
+    )
+    g = memories.graph_data(client)
+    assert all(n["topic"] is None for n in g["nodes"])
+
+
+def test_graph_data_singleton_has_no_topic(client):
+    embed = FakeEmbed({"lonely fact": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "lonely fact"}], project_id="p1")
+    g = memories.graph_data(client)
+    assert g["nodes"][0]["topic"] is None
+
+
+# ---------------------------------------------------------------------------
+# health_stats: /ui dashboard aggregation
+# ---------------------------------------------------------------------------
+def test_health_stats_counts_by_type_and_project(client):
+    embed = FakeEmbed({
+        "fact one": _unit(0), "decision one": _unit(30), "fact two": _unit(60),
+    })
+    memories.save_facts(client, embed, [
+        {"text": "fact one", "type": "fact"},
+        {"text": "decision one", "type": "decision"},
+    ], project_id="p1")
+    memories.save_facts(client, embed, [{"text": "fact two", "type": "fact"}], project_id="p2")
+
+    stats = memories.health_stats(client)
+    assert stats["by_type"] == {"fact": 2, "decision": 1}
+    assert stats["by_project"] == {"p1": 2, "p2": 1}
+    assert stats["total_active"] == 3
+    assert stats["total_superseded"] == 0
+    assert stats["superseded_ratio"] == 0.0
+
+
+def test_health_stats_superseded_ratio(client):
+    embed = FakeEmbed({
+        "old version": _unit(0),
+        "new version here": _unit(3),  # supersedes old
+    })
+    memories.save_facts(client, embed, [{"text": "old version"}])
+    memories.save_facts(client, embed, [{"text": "new version here"}])
+    stats = memories.health_stats(client)
+    assert stats["total_active"] == 1
+    assert stats["total_superseded"] == 1
+    assert stats["superseded_ratio"] == 0.5
+
+
+def test_health_stats_tracks_task_status_and_conflicts(client):
+    embed = FakeEmbed({
+        "ship it": _unit(80),
+        "prefers dark mode": _unit(0),
+        "now prefers light mode": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "ship it", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    memories.save_facts(client, embed, [{"text": "prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    memories.save_facts(client, embed, [{"text": "now prefers light mode"}], llm=llm)
+
+    stats = memories.health_stats(client)
+    assert stats["open_tasks"] == 0
+    assert stats["done_tasks"] == 1
+    assert stats["flagged_conflicts"] == 2  # both sides of the flagged pair
+
+
+def test_health_stats_excludes_session_summaries(client):
+    embed = FakeEmbed()
+    memories.save_session_summary(client, embed, "s1", "summary text")
+    stats = memories.health_stats(client)
+    assert stats["total_active"] == 0
+    assert stats["by_type"] == {}
 
 
 def test_session_project_sticky_to_founding_turn(client):
@@ -320,6 +784,61 @@ def test_set_fact_type(client):
     assert memories.set_fact_type(client, fact_id, "not-a-real-type") is False
     assert memories.list_facts(client)[0]["type"] == "decision"  # unchanged
     assert memories.set_fact_type(client, "00000000-0000-0000-0000-00000000dead", "task") is False
+
+
+# ---------------------------------------------------------------------------
+# status: open/done for task-type facts
+# ---------------------------------------------------------------------------
+def test_set_fact_status_open_to_done_and_back(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "ship the thing", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+
+    assert memories.list_facts(client)[0]["status"] is None  # no field = open
+    assert memories.set_fact_status(client, fact_id, "done") is True
+    assert memories.list_facts(client, include_done=True)[0]["status"] == "done"
+    assert memories.set_fact_status(client, fact_id, "open") is True
+    assert memories.list_facts(client)[0]["status"] == "open"
+
+
+def test_set_fact_status_rejects_invalid_value(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "ship the thing", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    assert memories.set_fact_status(client, fact_id, "archived") is False
+    assert memories.list_facts(client)[0]["status"] is None
+
+
+def test_set_fact_status_unknown_id_returns_false(client):
+    assert memories.set_fact_status(client, "00000000-0000-0000-0000-00000000dead", "done") is False
+
+
+def test_search_memories_hides_done_tasks_by_default(client):
+    embed = FakeEmbed({"finish the report": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "finish the report", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    assert "finish the report" not in [h["text"] for h in hits]
+
+
+def test_search_memories_shows_done_tasks_when_hide_disabled(client, monkeypatch):
+    monkeypatch.setattr(config, "HIDE_DONE_TASKS", False)
+    embed = FakeEmbed({"finish the report": _unit(0), "the query": _unit(0)})
+    memories.save_facts(client, embed, [{"text": "finish the report", "type": "task"}])
+    fact_id = memories.list_facts(client, include_done=True)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    hits = memories.search_memories(client, embed, "the query", top_k=5)
+    assert "finish the report" in [h["text"] for h in hits]
+
+
+def test_list_facts_include_done_toggle(client):
+    embed = FakeEmbed()
+    memories.save_facts(client, embed, [{"text": "closed task", "type": "task"}])
+    fact_id = memories.list_facts(client)[0]["id"]
+    memories.set_fact_status(client, fact_id, "done")
+    assert memories.list_facts(client) == []
+    assert len(memories.list_facts(client, include_done=True)) == 1
 
 
 def test_delete_fact_hard_deletes(client):
