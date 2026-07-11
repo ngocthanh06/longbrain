@@ -1336,11 +1336,18 @@ function select(n, withRipple = true) {
     <tr><td>Agent</td><td>${escapeHtml(n.source_agent || "—")}</td></tr>
     <tr><td>Status</td><td>${n.superseded ? "superseded" : "active"}</td></tr>
     ${n.type === "task" ? `<tr><td>Task</td><td>${n.status === "done" ? "✓ done" : "open"}</td></tr>` : ""}
+    ${n.conflicts_with ? `<tr><td>⚠ Conflict</td><td><span class="conflict-link" data-id="${n.conflicts_with}" style="cursor:pointer;text-decoration:underline;color:var(--accent)">may contradict another memory — view</span></td></tr>` : ""}
     <tr><td>Links</td><td>${(edgesByNode.get(n.id) || []).length} related</td></tr>`;
   $("pLoadSession").style.display = n.session_id ? "" : "none";
   $("pRetagSession").style.display = n.session_id ? "" : "none";
   $("pTaskStatus").style.display = n.type === "task" ? "" : "none";
   $("pTaskStatus").textContent = n.status === "done" ? "Reopen task" : "Close task";
+  $("pMeta").querySelectorAll(".conflict-link[data-id]").forEach(el => {
+    el.onclick = () => {
+      const t = nodes.find(x => x.id === el.dataset.id);
+      if (t) { select(t); camTarget = { x: t.x, y: t.y, k: Math.max(cam.k, 1.2) }; }
+    };
+  });
 
   // Scope counts on the re-tag buttons, so "everything vs just this one" is
   // an informed choice: group = same-project cluster up to 2 links away

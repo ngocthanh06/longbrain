@@ -102,6 +102,13 @@ LAST_SEEN_REFRESH = os.getenv("LAST_SEEN_REFRESH", "true").lower() == "true"
 # migration. Recall/list hide status=="done" tasks by default — this is a
 # recall-affecting change, hence the kill switch.
 HIDE_DONE_TASKS = os.getenv("HIDE_DONE_TASKS", "true").lower() == "true"
+# Third, weakest-signal tier in save_facts, after triple-supersede and
+# cosine-dedup: when neither resolved a new fact and it still scored inside
+# the dedup band against one existing fact, ask the LLM whether the two
+# actually CONTRADICT (different values for the same real-world thing) —
+# the existing dedup call only asks "same fact reworded?", never
+# "conflicting?". Flags both facts via conflicts_with; never auto-resolves.
+CONTRADICTION_DETECTION = os.getenv("CONTRADICTION_DETECTION", "true").lower() == "true"
 # Recall multiplier for same-project hits, applied on top of the scope rule:
 # when a project is known, auto-recall hard-scopes facts/history to that
 # project + the default project (preferences are global and always pass) —

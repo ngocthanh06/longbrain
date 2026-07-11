@@ -116,6 +116,29 @@ def _llm_confirms_duplicate(llm, new_text: str, existing_text: str) -> bool:
     return answer.strip().lower().startswith("yes")
 
 
+_CONTRADICTION_PROMPT = """Fact A is an existing stored memory. Fact B is a new \
+memory being saved right now. Do they CONTRADICT each other — stating \
+different, mutually exclusive values for the same real-world thing (e.g. a \
+different preference, a different current status, a different answer to \
+the same question)? Do not count it as a contradiction if Fact B is simply \
+about a different topic, or is consistent with / additional to Fact A.
+
+Fact A (existing): {a}
+Fact B (new): {b}
+
+Answer with exactly one word: yes or no."""
+
+
+def _llm_flags_contradiction(llm, new_text: str, existing_text: str) -> bool:
+    try:
+        answer = llm.complete(
+            _CONTRADICTION_PROMPT.format(a=existing_text, b=new_text)
+        ).text
+    except Exception:
+        return False  # best-effort — a flaky LLM call must not block saving
+    return answer.strip().lower().startswith("yes")
+
+
 def save_facts(
     client: QdrantClient,
     embed_model,
@@ -233,6 +256,7 @@ def save_facts(
             score_threshold=config.DEDUP_LLM_CHECK_MIN,
             with_payload=["text"],
         )
+        best_relevant = None  # highest-scoring hit NOT judged a duplicate
         for hit in hits:
             is_dup = hit.score >= config.SUPERSEDE_SIMILARITY or (
                 llm is not None and _llm_confirms_duplicate(llm, text, hit.payload.get("text", ""))
@@ -244,6 +268,28 @@ def save_facts(
                     points=[hit.id],
                 )
                 superseded.append(hit.payload.get("text", ""))
+            elif best_relevant is None:
+                best_relevant = hit
+
+        # Contradiction detector (third, weakest-signal tier): triple-
+        # supersede and the dedup band above already resolve the fact when
+        # they can. What's left — no matching triple, no dedup verdict — may
+        # still be a plain contradiction ("prefers dark mode" -> "prefers
+        # light mode") that both of those miss. Flag, don't auto-resolve:
+        # write a symmetric conflicts_with pointer on both facts and let the
+        # LLM/user reconcile. At most one LLM call per save.
+        contradicts_id = None
+        if (
+            config.CONTRADICTION_DETECTION and llm is not None and not triple
+            and best_relevant is not None
+            and _llm_flags_contradiction(llm, text, best_relevant.payload.get("text", ""))
+        ):
+            contradicts_id = str(best_relevant.id)
+            client.set_payload(
+                collection_name=config.MEMORIES_COLLECTION,
+                payload={"conflicts_with": point_id},
+                points=[best_relevant.id],
+            )
 
         now = time.time()
         payload = {
@@ -262,6 +308,8 @@ def save_facts(
             payload["triple_subject"] = triple[0]
             payload["triple_relation"] = triple[1]
             payload["triple_object"] = triple[2]
+        if contradicts_id:
+            payload["conflicts_with"] = contradicts_id
         client.upsert(
             collection_name=config.MEMORIES_COLLECTION,
             points=[qmodels.PointStruct(
@@ -272,7 +320,8 @@ def save_facts(
         )
         results.append(
             {"text": text, "status": "supersedes" if superseded else "new",
-             **({"superseded": superseded} if superseded else {})}
+             **({"superseded": superseded} if superseded else {}),
+             **({"conflicts_with": contradicts_id} if contradicts_id else {})}
         )
     return results
 
@@ -437,6 +486,7 @@ def search_memories(
                 "created_at": payload.get("created_at"),
                 "last_seen": last_seen,
                 "source_agent": payload.get("source_agent") or "",
+                "conflicts_with": payload.get("conflicts_with"),
                 "similarity": e["similarity"],
                 "score": final,
             }
@@ -501,6 +551,7 @@ def list_facts(
             "last_seen": p.payload.get("last_seen") or p.payload.get("created_at"),
             "superseded_by": p.payload.get("superseded_by"),
             "status": p.payload.get("status"),
+            "conflicts_with": p.payload.get("conflicts_with"),
             "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points
@@ -745,6 +796,7 @@ def graph_data(
             "session_id": p.payload.get("session_id") or "",
             "superseded": bool(p.payload.get("superseded_by")),
             "status": p.payload.get("status"),
+            "conflicts_with": p.payload.get("conflicts_with"),
             "source_agent": p.payload.get("source_agent") or "",
         }
         for p in points
@@ -856,11 +908,19 @@ def recall(
     def _agent(entry: dict) -> str:
         return f", {entry['source_agent']}" if entry.get("source_agent") else ""
 
+    # Flagged by the contradiction detector (save_facts) — surfaced, not
+    # auto-resolved, so the reader can ask the user which one is current.
+    def _conflict(entry: dict) -> str:
+        return (
+            " [note: conflicts with another stored fact — verify with the user]"
+            if entry.get("conflicts_with") else ""
+        )
+
     lines: list[str] = []
     if mems:
         lines.append("[Long-term memories]")
         lines += [
-            f"- ({m['type']}, {_fmt_date(m['created_at'])}{_agent(m)}) {m['text']}"
+            f"- ({m['type']}, {_fmt_date(m['created_at'])}{_agent(m)}) {m['text']}{_conflict(m)}"
             for m in mems
         ]
     if summaries:

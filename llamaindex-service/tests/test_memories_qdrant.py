@@ -110,6 +110,105 @@ def test_save_facts_without_llm_skips_dedup_band(client):
 
 
 # ---------------------------------------------------------------------------
+# save_facts: contradiction detector — third, weakest-signal tier after
+# triple-supersede and cosine-dedup. Flags, never auto-resolves.
+# ---------------------------------------------------------------------------
+def test_save_facts_llm_flags_contradiction_in_dedup_band(client):
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),  # in-band, not near-exact
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    r = memories.save_facts(
+        client, embed, [{"text": "User now prefers light mode"}], llm=llm
+    )
+    assert r[0]["status"] == "new"
+    assert r[0]["conflicts_with"]
+
+    facts = {f["text"]: f for f in memories.list_facts(client)}
+    assert facts["User prefers dark mode"]["superseded_by"] is None
+    assert (facts["User prefers dark mode"]["conflicts_with"]
+            == facts["User now prefers light mode"]["id"])
+    assert (facts["User now prefers light mode"]["conflicts_with"]
+            == facts["User prefers dark mode"]["id"])
+
+
+def test_save_facts_no_contradiction_stays_plain(client):
+    embed = FakeEmbed({
+        "User likes Qdrant": _unit(0),
+        "Something loosely related to Qdrant": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "User likes Qdrant"}])
+    llm = FakeLLM("no")
+    r = memories.save_facts(
+        client, embed, [{"text": "Something loosely related to Qdrant"}], llm=llm
+    )
+    assert "conflicts_with" not in r[0]
+    assert all(f.get("conflicts_with") is None for f in memories.list_facts(client))
+
+
+def test_save_facts_contradiction_skipped_without_llm(client):
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    r = memories.save_facts(client, embed, [{"text": "User now prefers light mode"}])
+    assert "conflicts_with" not in r[0]
+
+
+def test_save_facts_contradiction_disabled_via_config(client, monkeypatch):
+    monkeypatch.setattr(config, "CONTRADICTION_DETECTION", False)
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    r = memories.save_facts(
+        client, embed, [{"text": "User now prefers light mode"}], llm=llm
+    )
+    assert "conflicts_with" not in r[0]
+    assert not any("CONTRADICT" in c for c in llm.calls)
+
+
+def test_save_facts_triple_supersede_skips_contradiction_check(client):
+    # A has no triple but sits in the cosine dedup band of B; B carries a
+    # triple that matches nothing existing (triple-supersede finds no
+    # candidate). The contradiction check must still be skipped for B
+    # because it has a triple, even though best_relevant (A) exists.
+    embed = FakeEmbed({
+        "Something in the dedup band": _unit(0),
+        "A fresh fact with its own triple": _unit(41),
+    })
+    memories.save_facts(client, embed, [{"text": "Something in the dedup band"}])
+    llm = FakeLLM("no")  # keeps the dedup band from superseding either side
+    r = memories.save_facts(client, embed, [{
+        "text": "A fresh fact with its own triple",
+        "subject": "user", "relation": "favorite_color", "object": "blue",
+    }], llm=llm)
+    assert r[0]["status"] == "new"
+    assert "conflicts_with" not in r[0]
+    assert not any("CONTRADICT" in c for c in llm.calls)
+
+
+def test_recall_surfaces_conflict_warning(client):
+    embed = FakeEmbed({
+        "User prefers dark mode": _unit(0),
+        "User now prefers light mode": _unit(41),
+        "what theme does the user like": _unit(0),
+    })
+    memories.save_facts(client, embed, [{"text": "User prefers dark mode"}])
+    llm = FakeLLM(lambda p: "yes" if "CONTRADICT" in p else "no")
+    memories.save_facts(
+        client, embed, [{"text": "User now prefers light mode"}], llm=llm
+    )
+    result = memories.recall(client, embed, "what theme does the user like")
+    assert "conflicts with another stored fact" in result["context_block"]
+
+
+# ---------------------------------------------------------------------------
 # save_facts: triple-based supersession — contradictions the cosine bands
 # miss (same subject+relation, different object). Vectors are kept 60° apart
 # (cos ≈ 0.5 < DEDUP_LLM_CHECK_MIN) so the cosine paths provably never fire.
