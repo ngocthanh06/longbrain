@@ -99,11 +99,19 @@
   .btn:hover { border-color: var(--text-muted); }
   .btn:active { transform: scale(.97); }
   .btn.active { color: var(--text-primary); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .btn:disabled { opacity: .45; cursor: default; transform: none; }
+  select, input { font: inherit; }
   label.toggle { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12.5px; cursor: pointer; }
   #chips {
     display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
     padding: 8px 16px; border-bottom: 1px solid var(--border);
   }
+  .control-group { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); }
+  .control-group select {
+    color: var(--text-secondary); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 28px 5px 9px;
+  }
+  #graphLimitNote { color: var(--text-muted); font-size: 11px; }
   .chip-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .chip-group .glabel { color: var(--text-muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
   /* Project/Type filters: a compact trigger button instead of an
@@ -150,6 +158,15 @@
   }
   #empty .big { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
   #empty p { color: var(--text-secondary); margin-bottom: 12px; }
+  #loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 10; min-width: 260px; max-width: min(420px, 88vw); text-align: center;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 18px; color: var(--text-secondary);
+  }
+  #loading[hidden] { display: none; }
+  #loading strong { display: block; color: var(--text-primary); margin-bottom: 4px; }
+  #loading .btn { margin-top: 12px; }
   #legend {
     position: absolute; top: 12px; right: 12px; z-index: 8; display: none;
     max-width: 320px; background: var(--surface-1); border: 1px solid var(--border);
@@ -230,19 +247,43 @@
   #list {
     position: absolute; top: 0; left: 0; right: 0; bottom: 0;
     width: 100%; height: 100%; overflow: auto; display: none;
-    padding: 12px 16px; z-index: 4; background: var(--surface-1);
+    z-index: 4; background: var(--surface-1); scroll-behavior: smooth;
   }
+  .list-toolbar {
+    position: sticky; top: 0; z-index: 3; display: flex; align-items: center;
+    gap: 10px; padding: 12px 16px; background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+    border-bottom: 1px solid var(--border); backdrop-filter: blur(12px);
+  }
+  .list-search { position: relative; flex: 1; max-width: 620px; }
+  .list-search input {
+    width: 100%; color: var(--text-primary); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 9px; padding: 8px 34px 8px 11px;
+    outline: none;
+  }
+  .list-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow); }
+  .list-search .shortcut { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 10px; }
+  .list-summary { color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+  .list-table-wrap { padding: 0 16px; }
   #list table { width: 100%; border-collapse: collapse; }
   #list th {
     text-align: left; color: var(--text-muted); font-weight: 600; font-size: 10.5px;
     text-transform: uppercase; letter-spacing: .06em;
     padding: 6px 10px; border-bottom: 1px solid var(--border);
-    position: sticky; top: -12px; background: var(--surface-1);
+    position: sticky; top: 58px; z-index: 2; background: var(--surface-1);
   }
   #list td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  #list td:nth-child(2) { min-width: 280px; max-width: 760px; }
   #list tr:hover td { background: var(--surface-2); cursor: pointer; }
   #list tr.list-selected td { background: var(--glow); box-shadow: inset 2px 0 0 var(--accent); }
   #list .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .list-empty { padding: 64px 20px; text-align: center; color: var(--text-muted); }
+  .list-pagination {
+    position: sticky; bottom: 0; z-index: 3; display: flex; align-items: center;
+    justify-content: center; gap: 10px; padding: 10px 16px;
+    background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+    border-top: 1px solid var(--border); backdrop-filter: blur(12px);
+  }
+  .list-pagination .page { min-width: 112px; text-align: center; color: var(--text-muted); font-size: 11.5px; }
   footer {
     display: flex; gap: 16px; padding: 6px 16px; border-top: 1px solid var(--border);
     color: var(--text-muted); font-size: 11px;
@@ -310,43 +351,357 @@
     border-radius: 10px; padding: 10px 14px; box-shadow: var(--shadow);
     z-index: 70; display: none;
   }
+  @media (max-width: 760px) {
+    header { padding: 8px 10px; gap: 6px; }
+    header h1 { width: 100%; }
+    #searchBtn { max-width: none; order: 2; }
+    #chips { padding: 7px 10px; gap: 8px 12px; }
+    .list-toolbar { align-items: stretch; flex-wrap: wrap; padding: 10px; }
+    .list-search { flex-basis: 100%; max-width: none; }
+    .list-table-wrap { padding: 0; overflow-x: auto; }
+    #list th { top: 96px; }
+    #list td, #list th { padding-left: 8px; padding-right: 8px; }
+    #list td:nth-child(2) { min-width: 240px; }
+    footer span:last-child { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto !important; }
+    .btn, .chip, .rel { transition: none; }
+  }
+
+  /* ==============================================================
+     Atlas UI — canvas-first shell
+     ============================================================== */
+  :root, :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #050914;
+    --surface-1: #080e1b;
+    --surface-2: #10192a;
+    --surface-3: #18243a;
+    --border: rgba(150, 170, 215, .14);
+    --border-strong: rgba(164, 184, 234, .26);
+    --text-primary: #f4f7ff;
+    --text-secondary: #aeb9d1;
+    --text-muted: #697791;
+    --edge: #52617c;
+    --accent: #7c8cff;
+    --accent-2: #49d7c3;
+    --glow: rgba(124, 140, 255, .12);
+    --danger: #ff6b7a;
+    --shadow: 0 24px 80px rgba(0, 0, 0, .42);
+    --s1: #73a7ff; --s2: #49d7c3; --s3: #ffc765; --s4: #a78bfa;
+    --other: #78869f;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --surface-0: #eef2f8;
+    --surface-1: #f8faff;
+    --surface-2: #edf1f8;
+    --surface-3: #e1e7f2;
+    --border: rgba(49, 65, 98, .12);
+    --border-strong: rgba(49, 65, 98, .22);
+    --text-primary: #151b2b;
+    --text-secondary: #4d5970;
+    --text-muted: #8490a7;
+    --edge: #a5aec0;
+    --accent: #5867e8;
+    --accent-2: #008e80;
+    --glow: rgba(88, 103, 232, .10);
+    --danger: #d64256;
+    --shadow: 0 24px 70px rgba(40, 52, 78, .18);
+    --s1: #3978da; --s2: #008e80; --s3: #bf7900; --s4: #7652cf;
+    --other: #79859b;
+  }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    display: block; background: var(--surface-0); color: var(--text-primary);
+    font: 13px/1.5 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  button, select, input { font: inherit; }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  #appShell { height: 100%; display: grid; grid-template-columns: 238px minmax(0, 1fr); }
+  #sidebar {
+    position: relative; z-index: 20; min-height: 0; display: flex; flex-direction: column;
+    padding: 16px 13px 12px; background: color-mix(in srgb, var(--surface-1) 93%, transparent);
+    border-right: 1px solid var(--border); box-shadow: 10px 0 40px rgba(0,0,0,.12);
+  }
+  .brand {
+    display: flex; align-items: center; gap: 11px; width: 100%; padding: 5px 7px 18px;
+    color: var(--text-primary); background: none; border: 0; text-align: left; cursor: pointer;
+  }
+  .brand-mark {
+    position: relative; width: 34px; height: 34px; flex: none; border-radius: 11px;
+    background: radial-gradient(circle at 35% 30%, #9ea9ff, var(--accent) 42%, #4a3bc8 100%);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 42%, transparent), inset 0 1px 1px rgba(255,255,255,.3);
+  }
+  .brand-mark::before, .brand-mark::after {
+    content: ""; position: absolute; border: 1px solid rgba(255,255,255,.65); border-radius: 50%;
+    width: 42px; height: 15px; left: -5px; top: 9px; transform: rotate(-24deg);
+  }
+  .brand-mark::after { width: 4px; height: 4px; left: 24px; top: 6px; background: #fff; border: 0; }
+  .brand strong { display: block; font-size: 15px; letter-spacing: -.02em; }
+  .brand small { display: block; color: var(--text-muted); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; }
+  .primary-nav { display: grid; gap: 4px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .nav-item {
+    display: flex; align-items: center; gap: 11px; width: 100%; padding: 9px 11px;
+    color: var(--text-secondary); background: transparent; border: 1px solid transparent;
+    border-radius: 10px; cursor: pointer; text-align: left; transition: .18s ease;
+  }
+  .nav-item:hover { color: var(--text-primary); background: var(--surface-2); }
+  .nav-item.active {
+    color: var(--text-primary); background: linear-gradient(135deg, var(--glow), color-mix(in srgb, var(--surface-2) 88%, transparent));
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .nav-icon { width: 19px; color: var(--accent); font-size: 15px; text-align: center; }
+  #chips {
+    min-height: 0; flex: 1; display: block; overflow-y: auto; overflow-x: hidden;
+    padding: 18px 3px 8px; border: 0; scrollbar-width: thin;
+  }
+  .sidebar-heading { display: flex; align-items: baseline; justify-content: space-between; margin: 0 7px 10px; }
+  .sidebar-heading span { color: var(--text-primary); font-weight: 650; }
+  .sidebar-heading small { color: var(--text-muted); font-size: 10px; }
+  .filter-dd { margin-bottom: 7px; }
+  .filter-dd .dd-trigger {
+    width: 100%; justify-content: space-between; padding: 8px 10px;
+    background: transparent; border-color: transparent; border-radius: 9px;
+  }
+  .filter-dd .dd-trigger:hover, .filter-dd.open .dd-trigger { background: var(--surface-2); border-color: var(--border); }
+  .control-meta { display: flex; align-items: center; gap: 8px; }
+  .filter-dd .caret { font-size: 15px; transition: transform .18s; }
+  .filter-dd.open .caret { transform: rotate(180deg); }
+  .filter-dd .dd-panel {
+    position: fixed; top: 0; left: 251px; width: min(380px, calc(100vw - 280px));
+    max-width: none; max-height: min(520px, 72vh); padding: 12px;
+    background: color-mix(in srgb, var(--surface-1) 96%, transparent);
+    border-color: var(--border-strong); border-radius: 14px; backdrop-filter: blur(20px);
+  }
+  .filter-dd.open .dd-panel { display: flex; }
+  .chip { padding: 5px 10px; background: var(--surface-2); border-color: var(--border); }
+  .chip.off { opacity: .32; }
+  .filter-block { display: block; margin: 17px 7px 0; }
+  .filter-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--text-secondary); font-size: 11.5px; }
+  .filter-label span:last-child { color: var(--text-muted); font-size: 10.5px; }
+  .filter-block input[type=range] { width: 100%; accent-color: var(--accent); }
+  .filter-block select {
+    width: 100%; padding: 8px 9px; color: var(--text-secondary); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 9px;
+  }
+  .toggle-stack { display: grid; gap: 4px; margin: 16px 2px 0; padding-top: 12px; border-top: 1px solid var(--border); }
+  .toggle-stack label.toggle { padding: 6px 7px; color: var(--text-secondary); border-radius: 8px; }
+  .toggle-stack label.toggle:hover { background: var(--surface-2); }
+  label.toggle input { accent-color: var(--accent); }
+  .sidebar-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 11px 3px 0; border-top: 1px solid var(--border); }
+  .icon-btn {
+    height: 34px; color: var(--text-secondary); background: transparent; border: 1px solid var(--border);
+    border-radius: 9px; cursor: pointer;
+  }
+  .icon-btn:hover { color: var(--text-primary); background: var(--surface-2); border-color: var(--border-strong); }
+  #workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: 58px minmax(0, 1fr) 28px; }
+  #topbar {
+    min-width: 0; display: flex; align-items: center; gap: 16px; flex-wrap: nowrap;
+    padding: 10px 14px; background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+    border-bottom: 1px solid var(--border); backdrop-filter: blur(18px);
+  }
+  #searchBtn {
+    flex: 0 1 390px; max-width: 390px; min-width: 220px; height: 38px; padding: 0 10px;
+    background: var(--surface-2); border-color: var(--border); border-radius: 11px;
+    color: var(--text-muted); font-size: 12px;
+  }
+  #searchBtn:hover { color: var(--text-secondary); border-color: var(--border-strong); }
+  #searchBtn .search-icon { color: var(--accent); font-size: 19px; line-height: 1; }
+  #searchBtn kbd { background: var(--surface-3); border-color: var(--border); }
+  .topbar-status { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; }
+  .topbar-status span { overflow: hidden; text-overflow: ellipsis; }
+  .live-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 10px var(--accent-2); }
+  .status-sep { width: 1px; height: 13px; flex: none; background: var(--border-strong); }
+  .topbar-actions { display: flex; gap: 6px; }
+  .topbar-actions .btn { height: 34px; padding: 0 11px; background: transparent; border-color: var(--border); border-radius: 9px; }
+  .topbar-actions .icon-only { width: 34px; padding: 0; font-size: 16px; }
+  #stage {
+    position: relative; min-width: 0; min-height: 0; overflow: hidden;
+    isolation: isolate;
+    background:
+      radial-gradient(circle at 72% 18%, rgba(49, 88, 166, .13), transparent 34%),
+      radial-gradient(circle at 24% 84%, rgba(101, 55, 161, .11), transparent 38%),
+      var(--surface-0);
+  }
+  /* A diffuse Milky Way, never a solid stripe: layered gas clouds create
+     the broad body while the second layer contributes masked stellar dust. */
+  #stage::before, #stage::after {
+    content: ""; position: absolute; pointer-events: none; z-index: 0;
+    inset: -34% -24%; transform: rotate(-16deg); transform-origin: center;
+  }
+  #stage::before {
+    opacity: .82; filter: blur(18px) saturate(1.18); mix-blend-mode: screen;
+    background:
+      radial-gradient(ellipse 72% 9% at 50% 50%, rgba(235, 226, 255, .13), transparent 68%),
+      radial-gradient(ellipse 64% 15% at 46% 48%, rgba(104, 92, 210, .18), transparent 72%),
+      radial-gradient(ellipse 28% 20% at 30% 51%, rgba(55, 123, 201, .15), transparent 74%),
+      radial-gradient(ellipse 25% 18% at 68% 47%, rgba(148, 76, 185, .15), transparent 72%),
+      radial-gradient(ellipse 15% 12% at 53% 53%, rgba(232, 185, 139, .10), transparent 76%);
+  }
+  #stage::after {
+    opacity: .48; mix-blend-mode: screen;
+    background-image:
+      radial-gradient(circle, rgba(255,255,255,.72) 0 1px, transparent 1.35px),
+      radial-gradient(circle, rgba(181,199,255,.54) 0 .7px, transparent 1.15px),
+      radial-gradient(circle, rgba(241,205,166,.42) 0 .65px, transparent 1.05px);
+    background-size: 31px 29px, 47px 41px, 73px 61px;
+    background-position: 3px 7px, 19px 13px, 37px 31px;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 32%, #000 43%, #000 57%, transparent 68%);
+    mask-image: linear-gradient(to bottom, transparent 32%, #000 43%, #000 57%, transparent 68%);
+  }
+  #canvas { z-index: 1; background: transparent; }
+  :root[data-theme="light"] #stage::before { opacity: .26; mix-blend-mode: multiply; }
+  :root[data-theme="light"] #stage::after { opacity: .18; mix-blend-mode: multiply; }
+  footer {
+    display: flex; align-items: center; justify-content: center; gap: 18px; padding: 0 14px;
+    background: var(--surface-1); border-top: 1px solid var(--border); color: var(--text-muted); font-size: 9.5px;
+  }
+  footer b { color: var(--text-secondary); font-weight: 550; }
+  #zoomDock {
+    position: absolute; right: 16px; bottom: 16px; z-index: 7; display: flex; align-items: center;
+    padding: 5px; background: color-mix(in srgb, var(--surface-1) 91%, transparent);
+    border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow); backdrop-filter: blur(18px);
+  }
+  #zoomDock button {
+    min-width: 32px; height: 30px; padding: 0 8px; color: var(--text-secondary);
+    background: transparent; border: 0; border-radius: 7px; cursor: pointer;
+  }
+  #zoomDock button:hover { color: var(--text-primary); background: var(--surface-3); }
+  #zoomDock #zoomValue { min-width: 54px; font-size: 10.5px; color: var(--text-muted); }
+  #zoomDock > span { width: 1px; height: 18px; margin: 0 4px; background: var(--border); }
+  #legend, #health {
+    top: 14px; right: 14px; max-width: 340px; padding: 15px 16px;
+    background: color-mix(in srgb, var(--surface-1) 95%, transparent); border-color: var(--border-strong);
+    border-radius: 15px; backdrop-filter: blur(20px);
+  }
+  #panel {
+    width: 390px; padding: 22px 20px; background: color-mix(in srgb, var(--surface-1) 97%, transparent);
+    border-color: var(--border-strong); box-shadow: -24px 0 70px rgba(0,0,0,.28); backdrop-filter: blur(22px);
+  }
+  #panel .fact-text { font-size: 15px; line-height: 1.65; }
+  #panel .close { width: 30px; height: 30px; border-radius: 8px; }
+  #panel .close:hover { background: var(--surface-2); color: var(--text-primary); }
+  #bulkbar { bottom: 18px; border-color: var(--border-strong); backdrop-filter: blur(18px); }
+  #tooltip { background: color-mix(in srgb, var(--surface-1) 95%, transparent); border-color: var(--border-strong); backdrop-filter: blur(16px); }
+  #loading { border-color: var(--border-strong); background: color-mix(in srgb, var(--surface-1) 96%, transparent); backdrop-filter: blur(18px); }
+  #list { background: var(--surface-0); }
+  .list-toolbar { top: 0; background: color-mix(in srgb, var(--surface-1) 94%, transparent); border-color: var(--border); }
+  .list-table-wrap { padding: 0 22px; }
+  #list th { background: var(--surface-0); }
+  #list tr:hover td { background: var(--surface-2); }
+  .list-pagination { background: color-mix(in srgb, var(--surface-1) 94%, transparent); }
+  #spot { background: rgba(2, 5, 12, .72); backdrop-filter: blur(7px); }
+  #spotBox { margin-top: 15vh; background: var(--surface-1); border-color: var(--border-strong); border-radius: 18px; }
+  #spotInput { font-size: 17px; padding: 18px 20px; }
+  #modal { background: rgba(2, 5, 12, .72); backdrop-filter: blur(7px); }
+  #modalBox { background: var(--surface-1); border-color: var(--border-strong); border-radius: 18px; }
+
+  @media (max-width: 980px) {
+    #appShell { grid-template-columns: 205px minmax(0, 1fr); }
+    #sidebar { padding-left: 9px; padding-right: 9px; }
+    .topbar-status #statWritten, .topbar-status .status-sep { display: none; }
+    .filter-dd .dd-panel { width: min(340px, calc(100vw - 235px)); }
+  }
+  @media (max-width: 720px) {
+    #appShell { grid-template-columns: 66px minmax(0, 1fr); }
+    #sidebar { padding: 11px 7px; align-items: stretch; }
+    .brand { justify-content: center; padding: 3px 0 15px; }
+    .brand > span:last-child, .nav-item > span:last-child, #chips, .sidebar-actions { display: none; }
+    .primary-nav { gap: 7px; border: 0; }
+    .nav-item { justify-content: center; padding: 10px 0; }
+    .nav-icon { width: auto; }
+    #workspace { grid-template-rows: 55px minmax(0, 1fr) 24px; }
+    #topbar { padding: 8px 9px; gap: 8px; }
+    #searchBtn { flex: 1; min-width: 0; }
+    #searchBtn kbd, .topbar-status, .topbar-actions .icon-only { display: none; }
+    .topbar-actions .btn { padding: 0 8px; }
+    footer { gap: 10px; }
+    footer span:nth-child(n+3) { display: none; }
+    #panel { max-width: 92%; }
+    .list-toolbar { padding: 10px; }
+    .list-table-wrap { padding: 0; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1 id="homeTitle" title="Reset view (clear selection & fit)">Hermes Memory Graph</h1>
-  <button id="searchBtn"><span>🔍</span> Search memories… <kbd>⌘K</kbd></button>
-  <button class="btn active" id="viewGraph">Graph</button>
-  <button class="btn" id="viewList">List</button>
-  <button class="btn" id="viewEntities" title="Entity graph built from memory triples — who/what relates to what">Entities</button>
-  <button class="btn" id="fitBtn" title="Fit graph to window">Fit</button>
-  <button class="btn" id="exportBtn" title="Export current view as PNG">PNG</button>
-  <button class="btn" id="bundleExportBtn" title="Download all memory as a JSON bundle — for moving to another machine">⇩ Export</button>
-  <button class="btn" id="bundleImportBtn" title="Import a bundle exported on another machine — re-embeds with the current model, existing records are skipped">⇪ Import</button>
-  <button class="btn" id="themeBtn" title="Theme: auto / light / dark">◐ auto</button>
-  <button class="btn" id="legendBtn" title="What do the shapes and colors mean?">?</button>
-  <button class="btn" id="healthBtn" title="Memory health: counts, growth, superseded ratio, consolidation backlog">♡</button>
-  <label class="toggle"><input type="checkbox" id="showSuperseded"> superseded</label>
-  <label class="toggle" title="Group each galaxy's memories by topic — same-project facts that cluster tightly by meaning"><input type="checkbox" id="topicNesting" checked> topics</label>
+<div id="appShell">
+<aside id="sidebar">
+  <button class="brand" id="homeTitle" title="Reset view and fit all memories">
+    <span class="brand-mark"><i></i></span>
+    <span><strong>Hermes</strong><small>Memory atlas</small></span>
+  </button>
+
+  <nav class="primary-nav" aria-label="Views">
+    <button class="nav-item active" id="viewGraph"><span class="nav-icon">✣</span><span>Atlas</span></button>
+    <button class="nav-item" id="viewList"><span class="nav-icon">☷</span><span>Memories</span></button>
+    <button class="nav-item" id="viewEntities" title="Entity graph built from memory triples"><span class="nav-icon">⌘</span><span>Entities</span></button>
+  </nav>
+
+  <div id="chips">
+    <div class="sidebar-heading"><span>Explore</span><small>Filter the atlas</small></div>
+    <div class="filter-dd" id="projectDD">
+      <button class="btn dd-trigger" id="projectDDBtn"><span>Projects</span><span class="control-meta"><span class="n" id="projectDDCount"></span><span class="caret">›</span></span></button>
+      <div class="dd-panel chip-group" id="projectChips"></div>
+    </div>
+    <div class="filter-dd" id="typeDD">
+      <button class="btn dd-trigger" id="typeDDBtn"><span>Memory types</span><span class="control-meta"><span class="n" id="typeDDCount"></span><span class="caret">›</span></span></button>
+      <div class="dd-panel chip-group" id="typeChips"></div>
+    </div>
+
+    <div class="filter-block">
+      <div class="filter-label"><span>Link strength</span><span id="edgeMinVal">≥ 0.35</span></div>
+      <input type="range" id="edgeMin" min="0.35" max="0.9" step="0.05" value="0.35">
+    </div>
+    <label class="filter-block" title="Keep dense graphs readable and responsive; List view still shows every matching memory">
+      <div class="filter-label"><span>Canvas density</span><span id="graphLimitNote"></span></div>
+      <select id="graphLimit">
+        <option value="150" selected>Balanced · 150</option>
+        <option value="300">Detailed · 300</option>
+        <option value="600">Dense · 600</option>
+        <option value="0">Everything</option>
+      </select>
+    </label>
+    <label class="filter-block" title="Increase the distance between project hubs; you can also drag any hub directly">
+      <div class="filter-label"><span>Project spacing</span><span id="projectSpacingVal">100%</span></div>
+      <input type="range" id="projectSpacing" min="0.7" max="2.2" step="0.05" value="1">
+    </label>
+
+    <div class="toggle-stack">
+      <label class="toggle"><input type="checkbox" id="sameProj"><span>Project links only</span></label>
+      <label class="toggle" title="Group memories by semantic topic"><input type="checkbox" id="topicNesting" checked><span>Topic clusters</span></label>
+      <label class="toggle"><input type="checkbox" id="showSuperseded"><span>Superseded</span></label>
+    </div>
+  </div>
+
+  <div class="sidebar-actions">
+    <button class="icon-btn" id="themeBtn" title="Theme: auto / light / dark">◐</button>
+    <button class="icon-btn" id="legendBtn" title="Atlas legend">?</button>
+    <button class="icon-btn" id="healthBtn" title="Memory health">♡</button>
+  </div>
+</aside>
+
+<section id="workspace">
+<header id="topbar">
+  <button id="searchBtn"><span class="search-icon">⌕</span><span>Search memories</span><kbd>⌘ K</kbd></button>
+  <div class="topbar-status">
+    <span class="live-dot"></span><span id="statCounts">Loading atlas…</span>
+    <span class="status-sep"></span><span id="statWritten"></span>
+  </div>
+  <div class="topbar-actions">
+    <button class="btn" id="exportBtn" title="Export current atlas as PNG">Snapshot</button>
+    <button class="btn icon-only" id="bundleExportBtn" title="Export all memory data">⇩</button>
+    <button class="btn icon-only" id="bundleImportBtn" title="Import a memory bundle">⇧</button>
+  </div>
 </header>
-<div id="chips">
-  <div class="filter-dd" id="projectDD">
-    <button class="btn dd-trigger" id="projectDDBtn">Project <span class="n" id="projectDDCount"></span> <span class="caret">▾</span></button>
-    <div class="dd-panel chip-group" id="projectChips"></div>
-  </div>
-  <div class="filter-dd" id="typeDD">
-    <button class="btn dd-trigger" id="typeDDBtn">Type <span class="n" id="typeDDCount"></span> <span class="caret">▾</span></button>
-    <div class="dd-panel chip-group" id="typeChips"></div>
-  </div>
-  <div class="chip-group">
-    <span class="glabel">Links</span>
-    <input type="range" id="edgeMin" min="0.35" max="0.9" step="0.05" value="0.35">
-    <span class="n" id="edgeMinVal" style="color:var(--text-muted)">≥ 0.35</span>
-    <label class="toggle"><input type="checkbox" id="sameProj"> same project only</label>
-  </div>
-</div>
-<main>
+
+<main id="stage">
   <canvas id="canvas"></canvas>
+  <div id="loading"><strong>Loading memory map…</strong><span>Preparing projects and links.</span><button class="btn" id="retryLoad" style="display:none">Try again</button></div>
   <div id="empty">
     <div class="big" id="emptyTitle">Nothing to show</div>
     <p id="emptyMsg"></p>
@@ -359,8 +714,8 @@
     <div class="lg-row"><span class="lg-glyph" style="color:var(--s3)">✦</span><b>decision</b> — bright star (glow): a choice that was settled</div>
     <div class="lg-row"><span class="lg-glyph" style="color:var(--s4)">◌</span><b>task</b> — satellite (orbit ring): a commitment or something still to do</div>
     <div class="lg-sep"></div>
-    <div class="lg-row"><b>shape + color</b> = type · <b>size</b> = importance</div>
-    <div class="lg-row"><b>position</b> = project — each project is its own galaxy, named by a floating label at its center</div>
+    <div class="lg-row"><b>shape</b> = type · <b>color</b> = project · <b>size</b> = importance</div>
+    <div class="lg-row"><b>hub + spokes</b> = project — each project is a fixed, color-coded galaxy</div>
     <div class="lg-row"><span class="lg-glyph">◌</span>dashed outline = superseded (replaced by a newer memory)</div>
     <div class="lg-row"><span class="lg-glyph">⟋</span>edge = semantic similarity — darker means closer in meaning</div>
     <div class="lg-row"><span class="lg-glyph" style="color:var(--accent)">◌</span>dotted ring = same source session as the selected memory ("Re-tag whole session" moves these together)</div>
@@ -371,6 +726,13 @@
   </div>
   <div id="tooltip"></div>
   <div id="list"></div>
+  <div id="zoomDock" aria-label="Canvas zoom controls">
+    <button id="zoomOut" title="Zoom out (−)">−</button>
+    <button id="zoomValue" title="Reset zoom to 100%">100%</button>
+    <button id="zoomIn" title="Zoom in (+)">+</button>
+    <span></span>
+    <button id="fitBtn" title="Fit atlas to window">⌗</button>
+  </div>
   <div id="bulkbar">
     <span class="count" id="bulkCount"></span>
     <button class="btn" id="bulkLinked" title="Expand selection to every connected memory">Select linked</button>
@@ -398,10 +760,10 @@
   </aside>
 </main>
 <footer>
-  <span id="statCounts">–</span>
-  <span id="statWritten"></span>
-  <span style="margin-left:auto">drag to pan · wheel to zoom · click = details · ⇧click = multi-select</span>
+  <span><b>Drag</b> to pan</span><span><b>Scroll</b> to zoom</span><span><b>Double click</b> to dive in</span><span><b>⇧ click</b> to select</span>
 </footer>
+</section>
+</div>
 
 <div id="spot">
   <div id="spotBox">
@@ -432,18 +794,22 @@ const $ = id => document.getElementById(id);
 const canvas = $("canvas"), ctx = canvas.getContext("2d");
 const TYPES = ["fact", "preference", "decision", "task"];
 const TYPE_GLYPH = { fact: "●", preference: "☄", decision: "✦", task: "◌" };
-// Validated categorical palette (dataviz skill): fixed slot order, all 6
-// checks pass for this 4-subset. Color now identifies TYPE, not project —
-// project identity moved to spatial clustering (each project is a "galaxy",
-// see layoutGalaxies) plus a floating name label, so color+shape jointly
-// encode type (redundant on purpose: satisfies the CVD floor-band warning
-// this subset gets without adding a third channel).
+// Shape identifies memory type; a stable categorical color identifies the
+// project/galaxy. This mirrors the visual language of the reference atlas:
+// every hub and its satellites are immediately recognizable as one system.
 const TYPE_SLOTS = ["--s1", "--s2", "--s3", "--s4"];
 const TYPE_COLOR = { fact: "--s1", preference: "--s2", decision: "--s3", task: "--s4" };
+const PROJECT_PALETTE = [
+  "#7c5cff", "#3b82f6", "#4ade80", "#f6bd4b", "#ef72bd",
+  "#35c6e8", "#a78bfa", "#fb7185", "#2dd4bf", "#f59e0b",
+];
 
 let nodes = [], edges = [], adj = new Map(), edgesByNode = new Map(), nodeById = new Map();
 let multiSel = new Set();   // ids picked with shift+click for bulk actions
 let projectCenter = new Map();   // slug -> {x,y,r} galaxy center + footprint radius
+let projectOffsets = new Map();  // user-dragged offsets, retained across relayouts
+let projectSpacing = 1;
+let projectCountsCache = {};
 let knownProjects = new Set();   // tracks which projects we've already auto-shown once
 let lastSlugs = [];
 let selProjects = new Set(), selTypes = new Set(TYPES);
@@ -452,18 +818,35 @@ let cam = { x: 0, y: 0, k: 1 };
 let camTarget = null;  // when set, the camera glides toward it each frame
 let wheelGlide = null; // wheel zoom eases toward this {k, sx, sy, wx, wy} each frame
 let alpha = 0, dragging = null, panning = false, lastMouse = null, fitted = true;
-let animT = 0;  // slow ambient clock — drives the gentle spiral-arm drift
+let draggingProject = null;
+let animT = 0;
 let ripple = null;     // {node, t} selection ripple animation
 let css = {};
 // Perf: cached view size (getBoundingClientRect per node per frame forces
 // layout and is the main jank source), cached visible sets, and a dirty flag
 // so idle frames skip drawing entirely.
 let viewW = 0, viewH = 0;
-let visNodes = [], visEdges = [];
+let filteredNodes = [], visNodes = [], visEdges = [];
 let needsRender = true, hoverEasing = false;
 let edgeMin = 0.35, sameProjOnly = false;  // link display filters
 let topicNesting = true;  // nest same-topic nodes inside their galaxy (physics term in step())
+let graphLimit = 150;
+let listQuery = "", listPage = 1, listPageSize = 75;
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 function invalidate() { needsRender = true; }
+try {
+  const savedLayout = JSON.parse(localStorage.getItem("hermes-atlas-layout") || "{}");
+  projectSpacing = Math.min(2.2, Math.max(0.7, Number(savedLayout.spacing) || 1));
+  projectOffsets = new Map(Object.entries(savedLayout.offsets || {}).map(([slug, p]) =>
+    [slug, { x: Number(p.x) || 0, y: Number(p.y) || 0 }]));
+} catch (_) { /* a fresh deterministic layout is always a safe fallback */ }
+function saveProjectLayout() {
+  try {
+    localStorage.setItem("hermes-atlas-layout", JSON.stringify({
+      spacing: projectSpacing, offsets: Object.fromEntries(projectOffsets),
+    }));
+  } catch (_) { /* local storage can be disabled without affecting the atlas */ }
+}
 
 function readCss() {
   const s = getComputedStyle(document.documentElement);
@@ -483,7 +866,11 @@ try {
   else if (mq.addListener) mq.addListener(onChange);  // older Safari
 } catch (e) { /* theme follows manual toggle only */ }
 
-function colorOf(n) { return css[TYPE_COLOR[n.type]] || css["--other"]; }
+function projectColor(slug) {
+  const idx = Math.max(0, lastSlugs.indexOf(slug));
+  return PROJECT_PALETTE[idx % PROJECT_PALETTE.length];
+}
+function colorOf(n) { return projectColor(n.project_id); }
 
 // Deterministic pseudo-random in [0,1) for an integer cell — used so the
 // starfield looks fixed in place (same stars every redraw) instead of
@@ -513,15 +900,11 @@ function strHash(s) {
 // alphabetical (stable across reloads, same convention the old per-project
 // color used) so a galaxy doesn't jump to a new spot just because a sibling
 // gained or lost a memory.
-function galaxyFootprint(count) { return 60 * Math.sqrt(count + 1); }
+function galaxyFootprint(count) { return Math.min(225, 118 + Math.sqrt(count + 1) * 6); }
 
 let orbitRadius = 0;  // 0 = single galaxy, no orbit ring / core hub to draw
 
 function galaxyRot(slug) { return (strHash(slug) % 1000) / 1000 * Math.PI * 2; }
-// Small per-galaxy drift speed (+ direction) for the ambient spiral-arm
-// rotation — a distinct hash seed so it doesn't correlate with galaxyRot.
-function galaxySpin(slug) { return ((strHash(slug + "_spin") % 1000) / 1000 - 0.5) * 0.36; }
-
 // Topic sub-clustering (server-computed connected-components, see
 // memories.graph_data): a small, deterministic offset from the node's own
 // galaxy center, keyed by topic id, so same-topic nodes gravitate toward a
@@ -537,27 +920,67 @@ function topicCenterOffset(topic, footprint) {
 
 function layoutGalaxies(countsBySlug, slugs) {
   if (slugs.length <= 1) {
-    projectCenter = new Map(slugs.map(s =>
-      [s, { x: 0, y: 0, r: galaxyFootprint(countsBySlug[s] || 0), rot: galaxyRot(s), spin: galaxySpin(s) }]));
+    projectCenter = new Map(slugs.map(s => {
+      const off = projectOffsets.get(s) || { x: 0, y: 0 };
+      return [s, { x: off.x, y: off.y, baseX: 0, baseY: 0,
+        r: galaxyFootprint(countsBySlug[s] || 0), rot: galaxyRot(s) }];
+    }));
     orbitRadius = 0;
     return;
   }
   const footprints = slugs.map(s => galaxyFootprint(countsBySlug[s] || 0));
-  const sum = footprints.reduce((a, b) => a + b, 0);
-  // Ring circumference must fit every galaxy's diameter plus a wide gap.
-  // The multiplier matters more than it looks: fitView() auto-zooms to the
-  // total bounding box, so widening the ORBIT without widening each galaxy's
-  // own footprint is what actually buys visible empty space between
-  // clusters after the zoom-to-fit — screen-space node/label size stays
-  // fixed while the inter-cluster gap grows relative to it.
-  const orbit = Math.max(320, (sum * 9) / (2 * Math.PI));
-  orbitRadius = orbit;
+  // A centered, landscape-biased grid keeps every hub large enough to read
+  // in the opening view. Partial rows are centered instead of left aligned.
+  const cols = Math.ceil(Math.sqrt(slugs.length * 1.45));
+  const rows = Math.ceil(slugs.length / cols);
+  const gapX = 510 * projectSpacing, gapY = 390 * projectSpacing;
+  orbitRadius = 0;
   const next = new Map();
   slugs.forEach((s, i) => {
-    const a = (i / slugs.length) * Math.PI * 2 - Math.PI / 2;
-    next.set(s, { x: Math.cos(a) * orbit, y: Math.sin(a) * orbit, r: footprints[i], rot: galaxyRot(s), spin: galaxySpin(s) });
+    const row = Math.floor(i / cols), col = i % cols;
+    const inRow = Math.min(cols, slugs.length - row * cols);
+    const baseX = (col - (inRow - 1) / 2) * gapX;
+    const baseY = (row - (rows - 1) / 2) * gapY;
+    const off = projectOffsets.get(s) || { x: 0, y: 0 };
+    next.set(s, { x: baseX + off.x, y: baseY + off.y, baseX, baseY,
+      r: footprints[i], rot: galaxyRot(s) });
   });
   projectCenter = next;
+}
+
+// Deterministic hub-and-spoke layout. The scene is completely still: every
+// memory occupies a repeatable ring slot around its project hub, ordered by
+// importance and recency. More data creates additional rings, not a tangled
+// force-directed ball.
+function placeVisibleNodes() {
+  const groups = new Map();
+  for (const n of visNodes) {
+    if (!groups.has(n.project_id)) groups.set(n.project_id, []);
+    groups.get(n.project_id).push(n);
+  }
+  for (const [slug, group] of groups) {
+    const c = projectCenter.get(slug) || { x: 0, y: 0, rot: 0 };
+    group.sort((a, b) => (topicNesting ? String(a.topic || "").localeCompare(String(b.topic || "")) : 0) ||
+      (b.importance || 0) - (a.importance || 0) ||
+      (b.created_at || 0) - (a.created_at || 0) || String(a.id).localeCompare(String(b.id)));
+    let cursor = 0, ring = 0;
+    while (cursor < group.length) {
+      const capacity = 7 + ring * 5;
+      const take = Math.min(capacity, group.length - cursor);
+      const rr = 82 + ring * 54;
+      const phase = c.rot + ring * 0.43;
+      for (let j = 0; j < take; j++) {
+        const n = group[cursor + j];
+        const a = phase + j / take * Math.PI * 2;
+        n.x = c.x + Math.cos(a) * rr;
+        n.y = c.y + Math.sin(a) * rr * 0.74;
+        n.vx = n.vy = 0;
+        n.labelRank = cursor + j;
+      }
+      cursor += take; ring++;
+    }
+    c.r = Math.max(145, 98 + Math.max(0, ring - 1) * 54);
+  }
 }
 // Local time, not UTC — "which memory is newer" must match the user's clock.
 const pad2 = v => String(v).padStart(2, "0");
@@ -572,12 +995,63 @@ function fmtDateTime(ts) {
   return `${fmtDate(ts)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 function radius(n) { return 6 + (n.importance || 0.5) * 8; }
+// Keep nodes usable across a very wide zoom range: spatial distance scales
+// normally, while glyphs scale sub-linearly so they neither disappear nor
+// become giant blobs.
+function screenRadius(n) {
+  return Math.max(3.5, Math.min(28, radius(n) * Math.sqrt(Math.max(cam.k, 0.04))));
+}
 function visible(n) { return selProjects.has(n.project_id) && selTypes.has(n.type); }
 
 function rebuildVisible() {
-  visNodes = nodes.filter(visible);
+  filteredNodes = nodes.filter(visible);
+  // Dense graphs quickly become unreadable and the force simulation is O(n²).
+  // Keep the most useful nodes in the canvas while List remains complete.
+  const pinned = new Set([
+    ...(selected ? [selected.id] : []), ...multiSel,
+    ...(highlight ? [...highlight] : []),
+  ]);
+  const ranked = [...filteredNodes].sort((a, b) =>
+    Number(pinned.has(b.id)) - Number(pinned.has(a.id)) ||
+    (b.created_at || 0) - (a.created_at || 0) ||
+    (b.importance || 0) - (a.importance || 0));
+  if (graphLimit > 0 && ranked.length > graphLimit) {
+    // Round-robin by project prevents one high-volume project from consuming
+    // the entire canvas budget. Small galaxies stay visible; spare slots are
+    // automatically redistributed to larger ones after small groups exhaust.
+    const groups = new Map();
+    for (const n of ranked) {
+      if (!groups.has(n.project_id)) groups.set(n.project_id, []);
+      groups.get(n.project_id).push(n);
+    }
+    const picked = [], used = new Set();
+    for (const n of ranked) {
+      if (pinned.has(n.id) && picked.length < graphLimit) { picked.push(n); used.add(n.id); }
+    }
+    let round = 0, progressed = true;
+    const orderedGroups = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    while (picked.length < graphLimit && progressed) {
+      progressed = false;
+      for (const [, group] of orderedGroups) {
+        const n = group[round];
+        if (n && !used.has(n.id)) { picked.push(n); used.add(n.id); progressed = true; }
+        if (picked.length >= graphLimit) break;
+      }
+      round++;
+    }
+    // Pinned nodes can create holes at early group indices; fill any remainder.
+    if (picked.length < graphLimit) {
+      for (const n of ranked) {
+        if (!used.has(n.id)) { picked.push(n); used.add(n.id); }
+        if (picked.length >= graphLimit) break;
+      }
+    }
+    visNodes = picked;
+  } else visNodes = ranked;
+  placeVisibleNodes();
+  const visibleIds = new Set(visNodes.map(n => n.id));
   visEdges = edges.filter(e =>
-    e.a && e.b && visible(e.a) && visible(e.b) &&
+    e.a && e.b && visibleIds.has(e.source) && visibleIds.has(e.target) &&
     e.weight >= edgeMin &&
     (!sameProjOnly || e.a.project_id === e.b.project_id));
   // Adjacency follows the DISPLAYED edges, so hover-highlight and
@@ -588,31 +1062,52 @@ function rebuildVisible() {
     if (!adj.has(e.target)) adj.set(e.target, new Set());
     adj.get(e.source).add(e.target); adj.get(e.target).add(e.source);
   }
+  const hidden = filteredNodes.length - visNodes.length;
+  $("graphLimitNote").textContent = hidden > 0 ? `${hidden} in List` : "";
   invalidate();
 }
 
 // -------------------------------------------------------------------- data
 let graphMode = "facts";  // "entities" = triple-based entity graph
 async function load() {
+  const loading = $("loading");
+  loading.hidden = false;
+  loading.querySelector("strong").textContent = "Loading memory map…";
+  loading.querySelector("span").textContent = "Preparing projects and links.";
+  $("retryLoad").style.display = "none";
   const inc = $("showSuperseded").checked;
-  const data = await (await fetch(`/memory/graph?include_superseded=${inc}&mode=${graphMode}`)).json();
+  let data;
+  try {
+    const resp = await fetch(`/memory/graph?include_superseded=${inc}&mode=${graphMode}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (err) {
+    loading.querySelector("strong").textContent = "Could not load memories";
+    loading.querySelector("span").textContent = "Check that the memory service is running, then try again.";
+    $("retryLoad").style.display = "inline-block";
+    return;
+  }
   const old = new Map(nodes.map(n => [n.id, n]));
+  const oldCenters = new Map(projectCenter);
+  animT = 0;  // restart the orbital phase cleanly after a data/mode reload
 
   // Galaxy centers must exist before nodes are placed, so a brand-new memory
   // spawns inside its own project's cluster instead of at the shared origin.
   const countsBySlug = {};
   for (const n of data.nodes) countsBySlug[n.project_id] = (countsBySlug[n.project_id] || 0) + 1;
+  projectCountsCache = countsBySlug;
   const gxSlugs = Object.keys(countsBySlug).sort();
   layoutGalaxies(countsBySlug, gxSlugs);
 
   nodes = data.nodes.map(n => {
     const prev = old.get(n.id);
     const center = projectCenter.get(n.project_id) || { x: 0, y: 0 };
+    const oldCenter = oldCenters.get(n.project_id);
     const spread = galaxyFootprint(countsBySlug[n.project_id]);
     const a = Math.random() * Math.PI * 2, r = spread * (0.35 + Math.random() * 0.65);
     return Object.assign(n, {
-      x: prev ? prev.x : center.x + Math.cos(a) * r,
-      y: prev ? prev.y : center.y + Math.sin(a) * r,
+      x: prev ? prev.x + center.x - (oldCenter ? oldCenter.x : center.x) : center.x + Math.cos(a) * r,
+      y: prev ? prev.y + center.y - (oldCenter ? oldCenter.y : center.y) : center.y + Math.sin(a) * r,
       vx: 0, vy: 0, hs: 0,
     });
   });
@@ -640,21 +1135,29 @@ async function load() {
   buildChips(slugs);
   renderList();
   updateStats();
-  alpha = 1;
-  fitted = false;  // auto-fit once the layout settles
+  alpha = 0;
+  // Frame the atlas immediately. Waiting for the force simulation to cool
+  // leaves users staring at an empty 100% view for several seconds.
+  fitted = true;
+  if (!initialFitDone) { initialFitDone = true; fitView(1.25); }
+  else fitView();
+  loading.hidden = true;
 }
 
 function buildChips(slugs) {
   const pc = $("projectChips");
   pc.querySelectorAll(".chip").forEach(c => c.remove());
+  const projectCounts = new Map(), typeCounts = new Map();
+  for (const n of nodes) {
+    projectCounts.set(n.project_id, (projectCounts.get(n.project_id) || 0) + 1);
+    typeCounts.set(n.type, (typeCounts.get(n.type) || 0) + 1);
+  }
   for (const slug of slugs) {
-    const count = nodes.filter(n => n.project_id === slug).length;
+    const count = projectCounts.get(slug) || 0;
     const chip = document.createElement("span");
     chip.className = "chip" + (selProjects.has(slug) ? "" : " off");
     chip.dataset.slug = slug;
-    // Projects no longer carry a color (position/galaxy is their identity
-    // now) — a plain text pill, same interaction as before.
-    chip.innerHTML = `${escapeHtml(slug)} <span class="n">${count}</span><span class="edit" title="Rename project">✎</span>`;
+    chip.innerHTML = `<span class="dot" style="background:${projectColor(slug)}"></span>${escapeHtml(slug)} <span class="n">${count}</span><span class="edit" title="Rename project">✎</span>`;
     chip.onclick = () => {
       toggleSet(selProjects, slug, slugs);
       refreshChips();
@@ -668,7 +1171,7 @@ function buildChips(slugs) {
   const tc = $("typeChips");
   tc.querySelectorAll(".chip").forEach(c => c.remove());
   for (const t of TYPES) {
-    const count = nodes.filter(n => n.type === t).length;
+    const count = typeCounts.get(t) || 0;
     const chip = document.createElement("span");
     chip.className = "chip" + (selTypes.has(t) ? "" : " off");
     chip.dataset.type = t;
@@ -698,15 +1201,24 @@ function updateDDCounts() {
 function closeAllDD(except) {
   document.querySelectorAll(".filter-dd.open").forEach(el => { if (el !== except) el.classList.remove("open"); });
 }
+function positionDD(dd, trigger) {
+  const r = trigger.getBoundingClientRect();
+  const panel = dd.querySelector(".dd-panel");
+  panel.style.left = `${Math.min(r.right + 12, innerWidth - 220)}px`;
+  panel.style.top = `${Math.max(12, r.top)}px`;
+  panel.style.maxHeight = `${Math.max(180, innerHeight - r.top - 18)}px`;
+}
 for (const id of ["projectDD", "typeDD"]) {
   const dd = $(id);
   $(id + "Btn").onclick = e => {
     e.stopPropagation();
     const willOpen = !dd.classList.contains("open");
     closeAllDD();
+    if (willOpen) positionDD(dd, e.currentTarget);
     dd.classList.toggle("open", willOpen);
   };
 }
+addEventListener("resize", () => closeAllDD());
 document.addEventListener("click", e => {
   if (!e.target.closest(".filter-dd")) closeAllDD();
 });
@@ -731,9 +1243,10 @@ function refreshChips() {
 }
 
 function updateStats() {
+  const limited = filteredNodes.length > visNodes.length ? ` · ${visNodes.length} on graph` : "";
   $("statCounts").textContent =
-    `${visNodes.length}/${nodes.length} memories · ${visEdges.length} links`;
-  updateEmpty(visNodes.length);
+    `${filteredNodes.length}/${nodes.length} memories${limited} · ${visEdges.length} links`;
+  updateEmpty(filteredNodes.length);
   fetch("/health").then(r => r.json()).then(h => {
     if (h.last_written_at)
       $("statWritten").textContent = "last write: " + new Date(h.last_written_at * 1000).toLocaleString();
@@ -767,69 +1280,8 @@ $("emptyReset").onclick = () => {
 
 // -------------------------------------------------------------- simulation
 function step() {
-  if (alpha < 0.003) { autoFit(); return; }
-  const vis = visNodes;
-  // Repulsion grows with graph size so bigger graphs spread instead of clumping.
-  const charge = 2500 + 80 * vis.length;
-  // Dense graphs: shrink the interaction radius — far-field repulsion is
-  // negligible vs springs/gravity but dominates the O(n²) cost.
-  const cutoff = vis.length > 150 ? 90000 : 640000;
-  for (let i = 0; i < vis.length; i++) {
-    const a = vis[i];
-    for (let j = i + 1; j < vis.length; j++) {
-      const b = vis[j];
-      let dx = a.x - b.x, dy = a.y - b.y;
-      let d2 = dx * dx + dy * dy || 1;
-      if (d2 > cutoff) continue;
-      // Cross-galaxy repulsion is damped: full-strength repulsion between
-      // every pair (regardless of project) is what smeared clusters into
-      // one shared blob — two galaxies pushing on each other's members
-      // overpowers each one's own gravity well. Within a galaxy, repulsion
-      // stays full strength (still need internal spacing for readability).
-      const damp = a.project_id === b.project_id ? 1 : 0.22;
-      const f = charge / d2 * alpha * damp;
-      const d = Math.sqrt(d2);
-      dx /= d; dy /= d;
-      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
-    }
-  }
-  for (const e of visEdges) {
-    // Cross-galaxy edges are excluded from the simulation entirely — they
-    // still DRAW (a real semantic link between projects reads as a visible
-    // "bridge" in draw()), but must not exert force. Their target distance
-    // (~90-350) is tiny next to the gap between galaxy centers, so even a
-    // soft spring never stops pulling and drags the whole galaxy toward its
-    // neighbor — that's what was blurring every cluster into one blob.
-    if (e.a.project_id !== e.b.project_id) continue;
-    const ideal = 90 + (1 - e.weight) * 260;
-    let dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
-    const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = (d - ideal) * 0.02 * alpha;
-    dx /= d; dy /= d;
-    e.a.vx += dx * f; e.a.vy += dy * f; e.b.vx -= dx * f; e.b.vy -= dy * f;
-  }
-  for (const n of vis) {
-    // Gravity toward the memory's OWN galaxy center (not a shared origin):
-    // this is what makes each project cluster into a separate "galaxy".
-    // Still importance-weighted — important memories sit closer to their
-    // galaxy's core, peripheral ones drift toward its rim.
-    const center = projectCenter.get(n.project_id) || { x: 0, y: 0 };
-    const g = 0.0016 + 0.0012 * (n.importance || 0.5);
-    n.vx -= (n.x - center.x) * g * alpha; n.vy -= (n.y - center.y) * g * alpha;
-    if (topicNesting && n.topic) {
-      // A second, tighter gravity toward this topic's own point inside the
-      // galaxy — composes with the project-level pull above rather than
-      // replacing it, so topics nest inside galaxies instead of escaping them.
-      const gc = projectCenter.get(n.project_id);
-      const foot = gc ? gc.r : galaxyFootprint(1);
-      const off = topicCenterOffset(n.topic, foot);
-      const tx = center.x + off.dx, ty = center.y + off.dy;
-      n.vx -= (n.x - tx) * 0.004 * alpha; n.vy -= (n.y - ty) * 0.004 * alpha;
-    }
-    if (dragging === n) { n.vx = n.vy = 0; continue; }
-    n.x += n.vx; n.y += n.vy; n.vx *= 0.88; n.vy *= 0.88;
-  }
-  alpha *= 0.985;
+  alpha = 0;
+  autoFit();
 }
 
 let initialFitDone = false;
@@ -856,8 +1308,8 @@ function fitView(zoomOut = 1) {
     x: (minX + maxX) / 2,
     y: (minY + maxY) / 2,
     k: Math.min(
-      2.2,
-      Math.max(0.2, Math.min(
+      3,
+      Math.max(0.02, Math.min(
         (viewW - pad * 2) / Math.max(maxX - minX, 1),
         (viewH - pad * 2) / Math.max(maxY - minY, 1),
       ))
@@ -871,7 +1323,7 @@ function flyToGalaxy(slug) {
   const pad = 90, span = Math.max(c.r * 2, 200);
   camTarget = {
     x: c.x, y: c.y,
-    k: Math.min(2.2, Math.max(0.25, Math.min((viewW - pad * 2) / span, (viewH - pad * 2) / span))),
+    k: Math.min(3, Math.max(0.08, Math.min((viewW - pad * 2) / span, (viewH - pad * 2) / span))),
   };
 }
 
@@ -946,55 +1398,72 @@ function drawShape(x, y, r, type) {
   }
 }
 
+// Deterministic asteroid spiral. Rocks follow a tapered logarithmic-like path
+// toward the subject instead of orbiting, suggesting gravity without motion.
+// The muted palette keeps them distinct from color-coded memory nodes.
+function drawAsteroidSpiral(cx, cy, maxRadius, count, turns, direction, squash, tilt, seed) {
+  const ct = Math.cos(tilt), st = Math.sin(tilt);
+  for (let i = 0; i < count; i++) {
+    const t = (i + 3) / (count + 3);
+    const a = direction * t * Math.PI * 2 * turns + hash2(i, seed) * 0.13;
+    const radialJitter = 0.92 + hash2(i + seed, 31) * 0.16;
+    const rr = maxRadius * (0.08 + 0.92 * Math.pow(t, 0.78)) * radialJitter;
+    const ex = Math.cos(a) * rr;
+    const ey = Math.sin(a) * rr * squash;
+    const wx = cx + ex * ct - ey * st;
+    const wy = cy + ex * st + ey * ct;
+    const [x, y] = worldToScreen(wx, wy);
+    if (x < -12 || x > viewW + 12 || y < -12 || y > viewH + 12) continue;
+
+    const h = hash2(i * 7 + seed, 83);
+    const size = Math.max(0.8, Math.min(4.2,
+      (1.1 + h * 2.4) * (0.68 + Math.sqrt(Math.max(cam.k, 0.02)))));
+    const sides = h > 0.62 ? 6 : 5;
+    const rot = hash2(i + 9, seed * 3) * Math.PI * 2;
+    ctx.globalAlpha = 0.2 + h * 0.34;
+    ctx.fillStyle = css["--text-muted"];
+    ctx.beginPath();
+    for (let j = 0; j < sides; j++) {
+      const aa = rot + (j / sides) * Math.PI * 2;
+      const jag = 0.72 + hash2(i * 13 + j, seed + 17) * 0.38;
+      const px = x + Math.cos(aa) * size * jag;
+      const py = y + Math.sin(aa) * size * jag;
+      j === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // A tiny shaded crater on the larger rocks adds depth at close zoom.
+    if (size > 2.5) {
+      ctx.globalAlpha *= 0.42;
+      ctx.fillStyle = css["--surface-0"] || css["--surface-1"];
+      ctx.beginPath();
+      ctx.arc(x + size * 0.22, y - size * 0.16, size * 0.2, 0, 7);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+let lastZoomLabel = "";
 function draw() {
+  const zoomLabel = `${Math.max(1, Math.round(cam.k * 100))}%`;
+  if (zoomLabel !== lastZoomLabel) {
+    $("zoomValue").textContent = zoomLabel;
+    lastZoomLabel = zoomLabel;
+  }
   ctx.clearRect(0, 0, viewW, viewH);
   const off_l = -60, off_t = -60, off_r = viewW + 60, off_b = viewH + 60;
 
-  // Milky Way band: a soft glowing streak across the whole map, world-
-  // anchored (fixed angle through the origin, pans/zooms like everything
-  // else) so it reads as a real feature of the universe, not a screen
-  // decal. Layered gradients (wide+faint outer haze, narrower+brighter
-  // core) — the same trick real Milky Way photos show, without needing an
-  // image asset. Purely atmospheric: neutral tone, drawn first so every
-  // other layer (nebulae, stars, nodes) sits on top of it.
-  {
-    const angle = 0.62;
-    const [ox, oy] = worldToScreen(0, 0);
-    const length = Math.hypot(viewW, viewH) * 2.4;
-    ctx.save();
-    ctx.translate(ox, oy);
-    ctx.rotate(angle);
-    for (const layer of [
-      { half: 320, alpha: 0.05 },
-      { half: 165, alpha: 0.06 },
-      { half: 60, alpha: 0.08 },
-    ]) {
-      const half = layer.half * cam.k;
-      const bg = ctx.createLinearGradient(0, -half, 0, half);
-      bg.addColorStop(0, hexToRgba(css["--text-muted"], 0));
-      bg.addColorStop(0.5, hexToRgba(css["--text-muted"], layer.alpha));
-      bg.addColorStop(1, hexToRgba(css["--text-muted"], 0));
-      ctx.fillStyle = bg;
-      ctx.fillRect(-length / 2, -half, length, half * 2);
-    }
-    ctx.restore();
-  }
-
-  // Central core + orbit ring: with multiple galaxies, the middle of the
+  // Central core: with multiple galaxies, the middle of the
   // map is otherwise just empty starfield — this gives it a focal point
-  // (every galaxy visually "orbits" something) and doubles as a compass
-  // anchor while navigating. Purely decorative: no data lives at (0,0).
+  // and doubles as a compass anchor while navigating. Purely decorative:
+  // no data lives at (0,0). Asteroids below now imply orbit without a line.
   if (orbitRadius > 0) {
     const [ox, oy] = worldToScreen(0, 0);
     const coreRad = 34 * cam.k;
     if (ox + coreRad * 4 > 0 && ox - coreRad * 4 < viewW && oy + coreRad * 4 > 0 && oy - coreRad * 4 < viewH) {
-      const ring = orbitRadius * cam.k;
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = css["--edge"]; ctx.lineWidth = 1;
-      ctx.setLineDash([2, 6]);
-      ctx.beginPath(); ctx.arc(ox, oy, ring, 0, 7); ctx.stroke();
-      ctx.setLineDash([]);
-
       const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, coreRad * 4);
       cg.addColorStop(0, hexToRgba(css["--accent"], 0.5));
       cg.addColorStop(0.25, hexToRgba(css["--accent"], 0.16));
@@ -1007,54 +1476,36 @@ function draw() {
     }
   }
 
-  // Nebula glow: one soft, accent-tinted haze hugging each visible galaxy —
-  // deliberately the SAME hue everywhere (purely atmospheric) so it never
-  // competes with color-as-type on the nodes themselves, and sized to stay
-  // close to its own cluster instead of washing out the gaps between
-  // galaxies (that gap is the whole point of the layout).
+  // Project systems: a colored atmosphere plus clean hub-to-memory spokes.
+  // Unlike semantic edges, spokes describe ownership and make each galaxy
+  // readable even when hundreds of memories are loaded.
   for (const [slug, c] of projectCenter) {
     if (!selProjects.has(slug)) continue;
     const [x, y] = worldToScreen(c.x, c.y);
-    const rad = Math.max(c.r, 120) * cam.k * 1.15;
+    const projectHex = projectColor(slug);
+    const rad = Math.max(c.r, 145) * cam.k * 1.22;
     if (x + rad < 0 || x - rad > viewW || y + rad < 0 || y - rad > viewH) continue;
     const ng = ctx.createRadialGradient(x, y, 0, x, y, rad);
-    ng.addColorStop(0, hexToRgba(css["--accent"], 0.09));
-    ng.addColorStop(1, hexToRgba(css["--accent"], 0));
+    ng.addColorStop(0, hexToRgba(projectHex, 0.16));
+    ng.addColorStop(0.42, hexToRgba(projectHex, 0.055));
+    ng.addColorStop(1, hexToRgba(projectHex, 0));
     ctx.fillStyle = ng;
     ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
 
-    // Spiral arms: a cheap, image-free suggestion of galactic structure —
-    // two soft tapering curves per galaxy, drifting slowly around the core
-    // (c.spin, a per-galaxy speed/direction so they don't all turn in
-    // lockstep). c.rot is the fixed starting orientation, so the swirl
-    // still starts from a stable shape each reload; animT just nudges it.
-    const steps = 30, turns = 1.15, squash = 0.55;
-    for (let arm = 0; arm < 2; arm++) {
-      const armOffset = c.rot + arm * Math.PI + animT * c.spin;
-      const pts = [];
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        const theta = t * Math.PI * 2 * turns + armOffset;
-        const rr = rad * 0.9 * Math.pow(t, 0.72);
-        pts.push([x + Math.cos(theta) * rr, y + Math.sin(theta) * rr * squash]);
-      }
-      // Quadratic-through-midpoints: a standard trick for turning a sampled
-      // polyline into a smooth curve without full spline math.
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length - 1; i++) {
-        const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
-        ctx.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
-      }
-      const last = pts[pts.length - 1];
-      ctx.lineTo(last[0], last[1]);
-      ctx.strokeStyle = hexToRgba(css["--accent"], 0.09 - arm * 0.015);
-      ctx.lineWidth = Math.max(1, rad * 0.045);
+    ctx.strokeStyle = projectHex;
+    ctx.lineWidth = 1;
+    for (const n of visNodes) {
+      if (n.project_id !== slug) continue;
+      const [nx, ny] = worldToScreen(n.x, n.y);
+      const dx = nx - x, dy = ny - y;
+      const bend = ((strHash(String(n.id)) % 21) - 10) * 0.7;
+      ctx.globalAlpha = 0.12 + Math.min(0.16, (n.importance || 0.5) * 0.13);
+      ctx.beginPath(); ctx.moveTo(x, y);
+      ctx.quadraticCurveTo(x + dx * 0.52 - dy * 0.08 + bend,
+        y + dy * 0.52 + dx * 0.08 + bend, nx, ny);
       ctx.stroke();
     }
-    // Galactic core: a small bright point at the center of the swirl.
-    ctx.fillStyle = hexToRgba(css["--accent"], 0.4);
-    ctx.beginPath(); ctx.arc(x, y, Math.max(2, rad * 0.05), 0, 7); ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   // Starfield: world-anchored so it pans/zooms like a real backdrop (not a
@@ -1097,22 +1548,29 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
-  // Galaxy name labels: one floating label per project, at its gravity
-  // center, drawn behind everything else — a fixed screen size (not scaled
-  // by zoom) so the cluster stays identifiable at any distance.
-  if (projectCenter.size > 1) {
-    ctx.textAlign = "center";
-    ctx.font = "600 13px -apple-system, sans-serif";
-    for (const [slug, c] of projectCenter) {
-      if (!selProjects.has(slug)) continue;
-      const [x, y] = worldToScreen(c.x, c.y - c.r);
-      if (x < off_l - 100 || x > off_r + 100 || y < off_t - 40 || y > off_b + 40) continue;
-      ctx.globalAlpha = 0.4;
-      ctx.fillStyle = css["--text-muted"];
-      ctx.fillText(slug, x, y - 14);
-    }
-    ctx.textAlign = "left";
-    ctx.globalAlpha = 1;
+  // Cross-project relationship bridges. One strongest bridge per pair keeps
+  // the global map informative without turning it into a white-line web.
+  const bridgeByPair = new Map();
+  for (const e of visEdges) {
+    const a = e.a.project_id, b = e.b.project_id;
+    if (a === b) continue;
+    const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+    if (!bridgeByPair.has(key) || bridgeByPair.get(key).weight < e.weight) bridgeByPair.set(key, e);
+  }
+  for (const e of bridgeByPair.values()) {
+    const ca = projectCenter.get(e.a.project_id), cb = projectCenter.get(e.b.project_id);
+    if (!ca || !cb || !selProjects.has(e.a.project_id) || !selProjects.has(e.b.project_id)) continue;
+    const [x1, y1] = worldToScreen(ca.x, ca.y), [x2, y2] = worldToScreen(cb.x, cb.y);
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    grad.addColorStop(0, hexToRgba(projectColor(e.a.project_id), 0.46));
+    grad.addColorStop(0.5, hexToRgba(css["--text-muted"], 0.16));
+    grad.addColorStop(1, hexToRgba(projectColor(e.b.project_id), 0.46));
+    ctx.strokeStyle = grad; ctx.lineWidth = 1;
+    ctx.setLineDash([4, 7]);
+    ctx.beginPath(); ctx.moveTo(x1, y1);
+    ctx.quadraticCurveTo(mx, my - Math.min(55, Math.abs(x2 - x1) * 0.08), x2, y2);
+    ctx.stroke(); ctx.setLineDash([]);
   }
 
   const neighbors = selected ? (adj.get(selected.id) || new Set()) : null;
@@ -1123,6 +1581,7 @@ function draw() {
     (hoverNb && n !== hovered && !hoverNb.has(n.id));
 
   for (const e of visEdges) {
+    if (e.a.project_id !== e.b.project_id) continue;
     const [x1, y1] = worldToScreen(e.a.x, e.a.y);
     const [x2, y2] = worldToScreen(e.b.x, e.b.y);
     // viewport culling: skip edges entirely outside the screen
@@ -1130,8 +1589,8 @@ function draw() {
         (y1 < off_t && y2 < off_t) || (y1 > off_b && y2 > off_b)) continue;
     const active = (selected && (e.a === selected || e.b === selected)) ||
                    (!selected && hovered && (e.a === hovered || e.b === hovered));
-    ctx.globalAlpha = (dimmed(e.a) || dimmed(e.b)) ? 0.05
-      : active ? 0.85 : 0.13 + (e.weight - 0.35) * 0.7;
+    ctx.globalAlpha = (dimmed(e.a) || dimmed(e.b)) ? 0.025
+      : active ? 0.85 : 0.035 + (e.weight - 0.35) * 0.12;
     ctx.strokeStyle = active ? css["--accent"] : css["--edge"];
     ctx.lineWidth = active ? 1.6 : 1;
     // soft curved edges: a slight perpendicular bow
@@ -1152,6 +1611,36 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
+  // Prominent project hubs sit above the relationship web, matching the
+  // reference's central topic cards. Hub size stays readable while zooming.
+  ctx.textAlign = "center";
+  for (const [slug, c] of projectCenter) {
+    if (!selProjects.has(slug)) continue;
+    const [x, y] = worldToScreen(c.x, c.y);
+    if (x < off_l || x > off_r || y < off_t || y > off_b) continue;
+    const pc = projectColor(slug), hubR = 24;
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, hubR * 2.9);
+    glow.addColorStop(0, hexToRgba(pc, 0.48));
+    glow.addColorStop(0.46, hexToRgba(pc, 0.15));
+    glow.addColorStop(1, hexToRgba(pc, 0));
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(x, y, hubR * 2.9, 0, 7); ctx.fill();
+
+    ctx.fillStyle = hexToRgba(pc, 0.22);
+    ctx.strokeStyle = pc; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(x, y, hubR, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = pc; ctx.font = "700 18px system-ui, sans-serif";
+    ctx.fillText("✦", x, y + 6);
+
+    const pretty = slug.replace(/[-_]+/g, " ").replace(/\b\w/g, m => m.toUpperCase());
+    ctx.fillStyle = css["--text-primary"];
+    ctx.font = "650 12px -apple-system, sans-serif";
+    ctx.fillText(pretty.length > 25 ? pretty.slice(0, 24) + "…" : pretty, x, y + hubR + 20);
+    const count = visNodes.reduce((sum, n) => sum + (n.project_id === slug ? 1 : 0), 0);
+    ctx.fillStyle = css["--text-muted"]; ctx.font = "9px -apple-system, sans-serif";
+    ctx.fillText(`${count} memories`, x, y + hubR + 33);
+  }
+  ctx.textAlign = "left";
+
   // selection ripple
   if (ripple) {
     ripple.t += 0.045;
@@ -1161,13 +1650,13 @@ function draw() {
       ctx.globalAlpha = (1 - ripple.t) * 0.5;
       ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(rx, ry, (radius(ripple.node) + 4 + ripple.t * 34) * cam.k, 0, 7);
+      ctx.arc(rx, ry, screenRadius(ripple.node) + 4 + ripple.t * 34, 0, 7);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
   }
 
-  const showLabels = visNodes.length <= 60 || cam.k >= 1.2;
+  const showLabels = visNodes.length <= 80 || cam.k >= 0.78;
   hoverEasing = false;
   for (const n of visNodes) {
     // hover/selection scale eases in and out
@@ -1176,7 +1665,7 @@ function draw() {
     if (Math.abs(target - n.hs) > 0.005) hoverEasing = true;
     const [x, y] = worldToScreen(n.x, n.y);
     if (x < off_l || x > off_r || y < off_t || y > off_b) continue;  // culled
-    const rad = radius(n) * cam.k * (1 + 0.22 * n.hs);
+    const rad = screenRadius(n) * (1 + 0.22 * n.hs);
     const dim = dimmed(n);
     ctx.globalAlpha = dim ? 0.13 : (n.superseded ? 0.45 : 1);
     ctx.fillStyle = colorOf(n);
@@ -1233,11 +1722,15 @@ function draw() {
       ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke();
       ctx.setLineDash([]);
     }
-    if (showLabels && !dim) {
+    if ((showLabels || n.labelRank < 1) && !dim) {
       ctx.fillStyle = css["--text-secondary"];
       ctx.font = `${n.hs > 0.5 ? "600 " : ""}11px -apple-system, sans-serif`;
-      const label = n.text.length > 38 ? n.text.slice(0, 37) + "…" : n.text;
-      ctx.fillText(label, x + rad + 6, y + 3.5);
+      const label = n.text.length > 23 ? n.text.slice(0, 22) + "…" : n.text;
+      const gc = projectCenter.get(n.project_id) || { x: n.x - 1 };
+      const toRight = n.x >= gc.x;
+      ctx.textAlign = toRight ? "left" : "right";
+      ctx.fillText(label, x + (toRight ? rad + 6 : -rad - 6), y + 3.5);
+      ctx.textAlign = "left";
     }
   }
   ctx.globalAlpha = 1;
@@ -1248,12 +1741,7 @@ function loop() {
   step();
   glideCamera();
   glideWheel();
-  animT += 0.0022;  // ~one slow drift cycle per couple minutes, not a spin
-  // Idle frames skip drawing entirely EXCEPT the ambient galaxy drift, which
-  // is deliberately always-on (a gentle, continuous effect) — everything
-  // else still only redraws while something moves or after an interaction.
-  const animActive = projectCenter.size > 0;
-  if (needsRender || simActive || camTarget || wheelGlide || ripple || hoverEasing || animActive) {
+  if (needsRender || simActive || camTarget || wheelGlide || ripple || hoverEasing) {
     draw();
     needsRender = false;
   }
@@ -1265,15 +1753,31 @@ function nodeAt(sx, sy) {
   for (let i = visNodes.length - 1; i >= 0; i--) {
     const n = visNodes[i];
     const [x, y] = worldToScreen(n.x, n.y);
-    const hit = Math.max(radius(n) * cam.k, 8) + 4;   // generous hit target
+    const hit = Math.max(screenRadius(n), 8) + 5;   // generous hit target
     if ((sx - x) ** 2 + (sy - y) ** 2 <= hit * hit) return n;
+  }
+  return null;
+}
+function projectAt(sx, sy) {
+  for (const [slug, c] of [...projectCenter.entries()].reverse()) {
+    if (!selProjects.has(slug)) continue;
+    const [x, y] = worldToScreen(c.x, c.y);
+    if ((sx - x) ** 2 + (sy - y) ** 2 <= 31 ** 2) return { slug, center: c };
   }
   return null;
 }
 
 canvas.addEventListener("mousedown", e => {
   const n = nodeAt(e.offsetX, e.offsetY);
-  if (n) dragging = n; else { panning = true; canvas.classList.add("dragging"); }
+  const hub = n ? null : projectAt(e.offsetX, e.offsetY);
+  if (n) dragging = n;
+  else if (hub) {
+    const [wx, wy] = screenToWorld(e.offsetX, e.offsetY);
+    draggingProject = { slug: hub.slug, center: hub.center, startWX: wx, startWY: wy,
+      startX: hub.center.x, startY: hub.center.y, lastX: hub.center.x, lastY: hub.center.y,
+      startSX: e.offsetX, startSY: e.offsetY };
+    canvas.classList.add("dragging");
+  } else { panning = true; canvas.classList.add("dragging"); }
   camTarget = null; wheelGlide = null;  // manual control cancels any glide in progress
   lastMouse = [e.offsetX, e.offsetY];
 });
@@ -1284,14 +1788,30 @@ addEventListener("mouseup", e => {
   const ox = e.clientX - r.left, oy = e.clientY - r.top;
   if (dragging && lastMouse && Math.hypot(ox - lastMouse[0], oy - lastMouse[1]) < 4) {
     if (e.shiftKey) toggleMulti(dragging); else select(dragging);
+  } else if (draggingProject) {
+    if (Math.hypot(ox - draggingProject.startSX, oy - draggingProject.startSY) < 4)
+      flyToGalaxy(draggingProject.slug);
+    saveProjectLayout();
   } else if (panning && lastMouse && e.target === canvas &&
              Math.hypot(ox - lastMouse[0], oy - lastMouse[1]) < 4) {
     select(null);
   }
-  dragging = null; panning = false; canvas.classList.remove("dragging");
+  dragging = null; draggingProject = null; panning = false; canvas.classList.remove("dragging");
 });
 canvas.addEventListener("mousemove", e => {
-  if (dragging) {
+  if (draggingProject) {
+    const [wx, wy] = screenToWorld(e.offsetX, e.offsetY);
+    const c = draggingProject.center;
+    c.x = draggingProject.startX + wx - draggingProject.startWX;
+    c.y = draggingProject.startY + wy - draggingProject.startWY;
+    const dx = c.x - draggingProject.lastX, dy = c.y - draggingProject.lastY;
+    for (const n of visNodes) {
+      if (n.project_id === draggingProject.slug) { n.x += dx; n.y += dy; }
+    }
+    draggingProject.lastX = c.x; draggingProject.lastY = c.y;
+    projectOffsets.set(draggingProject.slug, { x: c.x - c.baseX, y: c.y - c.baseY });
+    invalidate();
+  } else if (dragging) {
     const [wx, wy] = screenToWorld(e.offsetX, e.offsetY);
     dragging.x = wx; dragging.y = wy; alpha = Math.max(alpha, 0.25);
     invalidate();
@@ -1302,8 +1822,9 @@ canvas.addEventListener("mousemove", e => {
     invalidate();
   } else {
     const n = nodeAt(e.offsetX, e.offsetY);
+    const hub = n ? null : projectAt(e.offsetX, e.offsetY);
     if (n !== hovered) invalidate();
-    hovered = n; canvas.style.cursor = n ? "pointer" : "grab";
+    hovered = n; canvas.style.cursor = n ? "pointer" : hub ? "move" : "grab";
     const tip = $("tooltip");
     if (n) {
       tip.style.display = "block";
@@ -1312,9 +1833,14 @@ canvas.addEventListener("mousemove", e => {
         <span class="badge"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:${colorOf(n)};display:inline-block;margin-right:4px"></span>${TYPE_GLYPH[n.type] || ""} ${n.type}</span> imp ${n.importance} · ${fmtDate(n.created_at)}${n.superseded ? " · superseded" : ""}</div>`;
       tip.style.left = Math.min(e.offsetX + 14, canvas.getBoundingClientRect().width - 350) + "px";
       tip.style.top = (e.offsetY + 14) + "px";
+    } else if (hub) {
+      tip.style.display = "block";
+      tip.innerHTML = `<div class="t-text"><b>${escapeHtml(hub.slug)}</b></div><div class="t-meta">Drag this hub to move the whole project</div>`;
+      tip.style.left = Math.min(e.offsetX + 14, canvas.getBoundingClientRect().width - 350) + "px";
+      tip.style.top = (e.offsetY + 14) + "px";
     } else tip.style.display = "none";
   }
-  if (dragging || panning) $("tooltip").style.display = "none";
+  if (dragging || draggingProject || panning) $("tooltip").style.display = "none";
 });
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
@@ -1323,13 +1849,28 @@ canvas.addEventListener("wheel", e => {
   // moves the target; glideWheel() eases cam.k there frame by frame with the
   // world point under the pointer pinned. A discrete mouse-wheel notch
   // (deltaY ≈ ±100 in a single event) animates instead of jumping ~20%.
-  const scale = e.deltaMode === 1 ? 0.05 : 0.0022;  // lines vs pixels
+  const scale = e.deltaMode === 1 ? 0.045 : 0.0017;  // lines vs pixels
   const fromK = wheelGlide ? wheelGlide.k : cam.k;
-  const k = Math.min(4, Math.max(0.15, fromK * Math.exp(-e.deltaY * scale)));
+  const k = Math.min(12, Math.max(0.02, fromK * Math.exp(-e.deltaY * scale)));
   const [wx, wy] = screenToWorld(e.offsetX, e.offsetY);
   wheelGlide = { k, sx: e.offsetX, sy: e.offsetY, wx, wy };
   invalidate();
 }, { passive: false });
+
+function zoomAt(sx, sy, factor) {
+  camTarget = null;
+  const fromK = wheelGlide ? wheelGlide.k : cam.k;
+  const [wx, wy] = screenToWorld(sx, sy);
+  wheelGlide = {
+    k: Math.min(12, Math.max(0.02, fromK * factor)),
+    sx, sy, wx, wy,
+  };
+  invalidate();
+}
+canvas.addEventListener("dblclick", e => {
+  e.preventDefault();
+  zoomAt(e.offsetX, e.offsetY, e.shiftKey ? 0.55 : 1.8);
+});
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
@@ -1360,7 +1901,12 @@ function mdToHtml(src) {
 
 // ------------------------------------------------------------------- panel
 function select(n, withRipple = true) {
+  const previous = selected;
   selected = n;
+  // A selection made from the complete List/search results must stay visible
+  // even when the canvas is capped to a smaller, readable subset.
+  if (n && visible(n) && !visNodes.includes(n) && graphLimit > 0) rebuildVisible();
+  else if (!n && previous && filteredNodes.length > graphLimit && graphLimit > 0) rebuildVisible();
   invalidate();
   const panel = $("panel");
   if (!n) { panel.style.display = "none"; return; }
@@ -1761,6 +2307,7 @@ function chooseSpot(i) {
   if (!r) return;
   pushRecent($("spotInput").value.trim());
   highlight = new Set(spotResults.map(x => x.id));
+  rebuildVisible();
   closeSpot();
   select(r.node);
   camTarget = { x: r.node.x, y: r.node.y, k: Math.max(cam.k, 1.4) };
@@ -1788,7 +2335,7 @@ addEventListener("keydown", e => {
   if (e.key === "Escape") {
     if ($("modal").style.display === "block") closeModal(null);
     else if ($("spot").style.display === "block") closeSpot();
-    else if (highlight) { highlight = null; invalidate(); }
+    else if (highlight) { highlight = null; rebuildVisible(); }
     else if (multiSel.size) { multiSel = new Set(); updateBulkbar(); }
     else select(null);
   }
@@ -1796,15 +2343,16 @@ addEventListener("keydown", e => {
 
 // ------------------------------------------------------------ theme/export
 const THEME_KEY = "hermes-ui-theme";
-const THEMES = ["auto", "light", "dark"];
+const THEMES = ["dark", "light"];
 function applyTheme(t) {
   if (t === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
-  $("themeBtn").textContent = "◐ " + t;
+  $("themeBtn").textContent = "◐";
+  $("themeBtn").title = `Theme: ${t}`;
   readCss(); buildChips(lastSlugs); renderList(); invalidate();
 }
 $("themeBtn").onclick = () => {
-  const cur = localStorage.getItem(THEME_KEY) || "auto";
+  const cur = localStorage.getItem(THEME_KEY) || "dark";
   const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
   try { localStorage.setItem(THEME_KEY, next); } catch {}
   applyTheme(next);
@@ -1859,14 +2407,21 @@ $("bundleFile").onchange = async e => {
   } catch (err) {
     toast("Import failed: " + err, 6000);
   } finally {
-    btn.disabled = false; btn.textContent = "⇪ Import";
+    btn.disabled = false; btn.textContent = "⇧";
   }
 };
 
 // -------------------------------------------------------------- list view
-function renderList() {
-  const rows = [...visNodes]
+function renderList(keepFocus = false) {
+  const q = listQuery.trim().toLocaleLowerCase();
+  const matches = filteredNodes
+    .filter(n => !q || `${n.project_id} ${n.type} ${n.text}`.toLocaleLowerCase().includes(q))
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+  const totalPages = Math.max(1, Math.ceil(matches.length / listPageSize));
+  listPage = Math.min(listPage, totalPages);
+  const start = (listPage - 1) * listPageSize;
+  const pageNodes = matches.slice(start, start + listPageSize);
+  const rows = pageNodes
     .map(n => {
       const cls = [n.superseded ? "ghosted" : "", multiSel.has(n.id) ? "list-selected" : ""]
         .filter(Boolean).join(" ");
@@ -1877,9 +2432,41 @@ function renderList() {
       <td>${n.importance}</td>
       <td>${fmtDateTime(n.created_at)}</td></tr>`;
     }).join("");
-  $("list").innerHTML = `<table>
-    <thead><tr><th>Project</th><th>Memory</th><th>Type</th><th>Imp.</th><th>Created</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+  const shownFrom = matches.length ? start + 1 : 0;
+  const shownTo = Math.min(start + pageNodes.length, matches.length);
+  $("list").innerHTML = `<div class="list-toolbar">
+      <div class="list-search"><input id="listSearch" type="search" value="${escapeHtml(listQuery)}" placeholder="Filter by memory, project or type…" autocomplete="off"><span class="shortcut">/</span></div>
+      <span class="list-summary">${shownFrom}–${shownTo} of ${matches.length}</span>
+      <label class="control-group">Rows <select id="listPageSize">
+        ${[50, 75, 100, 200].map(v => `<option value="${v}"${v === listPageSize ? " selected" : ""}>${v}</option>`).join("")}
+      </select></label>
+    </div>
+    <div class="list-table-wrap">${rows ? `<table>
+      <thead><tr><th>Project</th><th>Memory</th><th>Type</th><th>Imp.</th><th>Created</th></tr></thead>
+      <tbody>${rows}</tbody></table>` : `<div class="list-empty">No memories match “${escapeHtml(listQuery)}”.</div>`}</div>
+    <div class="list-pagination">
+      <button class="btn" id="listPrev"${listPage <= 1 ? " disabled" : ""}>← Previous</button>
+      <span class="page">Page ${listPage} of ${totalPages}</span>
+      <button class="btn" id="listNext"${listPage >= totalPages ? " disabled" : ""}>Next →</button>
+    </div>`;
+  const search = $("listSearch");
+  search.oninput = e => {
+    listQuery = e.target.value;
+    listPage = 1;
+    renderList(true);
+  };
+  $("listPageSize").onchange = e => {
+    listPageSize = parseInt(e.target.value, 10);
+    listPage = 1;
+    renderList();
+    $("list").scrollTop = 0;
+  };
+  $("listPrev").onclick = () => { if (listPage > 1) { listPage--; renderList(); $("list").scrollTop = 0; } };
+  $("listNext").onclick = () => { if (listPage < totalPages) { listPage++; renderList(); $("list").scrollTop = 0; } };
+  if (keepFocus) {
+    search.focus();
+    search.setSelectionRange(search.value.length, search.value.length);
+  }
   $("list").querySelectorAll("tr[data-id]").forEach(tr => {
     // Same convention as the graph: plain click opens details, shift+click
     // adds/removes it from the bulk selection — precise row targets make
@@ -1893,11 +2480,20 @@ function renderList() {
   });
 }
 $("fitBtn").onclick = () => fitView();
+$("zoomIn").onclick = () => zoomAt(viewW / 2, viewH / 2, 1.45);
+$("zoomOut").onclick = () => zoomAt(viewW / 2, viewH / 2, 1 / 1.45);
+$("zoomValue").onclick = () => {
+  camTarget = { x: cam.x, y: cam.y, k: 1 };
+  wheelGlide = null;
+};
 $("homeTitle").onclick = () => {
-  // "home": clear every transient state and re-center the map
+  // "home": clear transient state and restore the default project layout.
   highlight = null;
   multiSel = new Set(); updateBulkbar();
   select(null);
+  projectOffsets.clear(); projectSpacing = 1;
+  $("projectSpacing").value = "1"; $("projectSpacingVal").textContent = "100%";
+  layoutGalaxies(projectCountsCache, lastSlugs); placeVisibleNodes(); saveProjectLayout();
   fitView();
 };
 $("legendBtn").onclick = () => {
@@ -1933,22 +2529,31 @@ $("healthBtn").onclick = () => {
   hl.style.display = opening ? "block" : "none";
   if (opening) renderHealth();
 };
-$("viewGraph").onclick = () => { $("list").style.display = "none"; setView("viewGraph"); };
-$("viewList").onclick = () => { renderList(); $("list").style.display = "block"; setView("viewList"); };
-$("viewEntities").onclick = () => {
-  graphMode = graphMode === "entities" ? "facts" : "entities";
-  $("viewEntities").classList.toggle("active", graphMode === "entities");
-  $("list").style.display = "none"; setView("viewGraph");
-  load();
+$("viewGraph").onclick = async () => {
+  $("list").style.display = "none";
+  setView("viewGraph");
+  if (graphMode !== "facts") { graphMode = "facts"; await load(); }
+};
+$("viewList").onclick = async () => {
+  setView("viewList");
+  if (graphMode !== "facts") { graphMode = "facts"; await load(); }
+  renderList(); $("list").style.display = "block";
+};
+$("viewEntities").onclick = async () => {
+  graphMode = "entities";
+  $("list").style.display = "none";
+  setView("viewEntities");
+  await load();
 };
 function setView(id) {
   $("viewGraph").classList.toggle("active", id === "viewGraph");
   $("viewList").classList.toggle("active", id === "viewList");
+  $("viewEntities").classList.toggle("active", id === "viewEntities");
 }
 $("showSuperseded").onchange = load;
 $("topicNesting").onchange = e => {
   topicNesting = e.target.checked;
-  alpha = Math.max(alpha, .3);
+  placeVisibleNodes(); invalidate();
 };
 $("edgeMin").oninput = e => {
   edgeMin = parseFloat(e.target.value);
@@ -1959,8 +2564,35 @@ $("sameProj").onchange = e => {
   sameProjOnly = e.target.checked;
   rebuildVisible(); updateStats(); alpha = Math.max(alpha, .3);
 };
+$("graphLimit").onchange = e => {
+  graphLimit = parseInt(e.target.value, 10);
+  rebuildVisible(); renderList(); updateStats();
+  alpha = Math.max(alpha, .3); fitted = false;
+};
+$("projectSpacing").value = projectSpacing;
+$("projectSpacingVal").textContent = `${Math.round(projectSpacing * 100)}%`;
+$("projectSpacing").oninput = e => {
+  projectSpacing = parseFloat(e.target.value);
+  $("projectSpacingVal").textContent = `${Math.round(projectSpacing * 100)}%`;
+  layoutGalaxies(projectCountsCache, lastSlugs);
+  placeVisibleNodes(); saveProjectLayout(); fitView(); invalidate();
+};
+$("retryLoad").onclick = load;
+addEventListener("keydown", e => {
+  if (e.key === "/" && $("list").style.display === "block" &&
+      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
+    e.preventDefault();
+    $("listSearch").focus();
+  }
+  if (!["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomAt(viewW / 2, viewH / 2, 1.45); }
+    else if (e.key === "-") { e.preventDefault(); zoomAt(viewW / 2, viewH / 2, 1 / 1.45); }
+    else if (e.key === "0") { e.preventDefault(); camTarget = { x: cam.x, y: cam.y, k: 1 }; wheelGlide = null; }
+    else if (e.key.toLowerCase() === "f") { e.preventDefault(); fitView(); }
+  }
+});
 
-applyTheme(localStorage.getItem(THEME_KEY) || "auto");
+applyTheme(localStorage.getItem(THEME_KEY) || "dark");
 resize(); load(); loop();
 </script>
 </body>
