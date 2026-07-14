@@ -807,6 +807,7 @@ const PROJECT_PALETTE = [
 let nodes = [], edges = [], adj = new Map(), edgesByNode = new Map(), nodeById = new Map();
 let multiSel = new Set();   // ids picked with shift+click for bulk actions
 let projectCenter = new Map();   // slug -> {x,y,r} galaxy center + footprint radius
+let visNodesByProject = new Map();   // slug -> visNodes belonging to it (rebuilt in placeVisibleNodes)
 let projectOffsets = new Map();  // user-dragged offsets, retained across relayouts
 let projectSpacing = 1;
 let projectCountsCache = {};
@@ -867,8 +868,7 @@ try {
 } catch (e) { /* theme follows manual toggle only */ }
 
 function projectColor(slug) {
-  const idx = Math.max(0, lastSlugs.indexOf(slug));
-  return PROJECT_PALETTE[idx % PROJECT_PALETTE.length];
+  return PROJECT_PALETTE[strHash(slug) % PROJECT_PALETTE.length];
 }
 function colorOf(n) { return projectColor(n.project_id); }
 
@@ -933,7 +933,11 @@ function layoutGalaxies(countsBySlug, slugs) {
   // in the opening view. Partial rows are centered instead of left aligned.
   const cols = Math.ceil(Math.sqrt(slugs.length * 1.45));
   const rows = Math.ceil(slugs.length / cols);
-  const gapX = 510 * projectSpacing, gapY = 390 * projectSpacing;
+  // Base gap sized for the common case, widened when any hub's footprint
+  // (which grows with memory count) would otherwise crowd its neighbor.
+  const maxFootprint = Math.max(...footprints);
+  const gapX = Math.max(510, maxFootprint * 2.3) * projectSpacing;
+  const gapY = Math.max(390, maxFootprint * 1.75) * projectSpacing;
   orbitRadius = 0;
   const next = new Map();
   slugs.forEach((s, i) => {
@@ -958,6 +962,7 @@ function placeVisibleNodes() {
     if (!groups.has(n.project_id)) groups.set(n.project_id, []);
     groups.get(n.project_id).push(n);
   }
+  visNodesByProject = groups;  // reused by draw() so it doesn't rescan visNodes per project per frame
   for (const [slug, group] of groups) {
     const c = projectCenter.get(slug) || { x: 0, y: 0, rot: 0 };
     group.sort((a, b) => (topicNesting ? String(a.topic || "").localeCompare(String(b.topic || "")) : 0) ||
@@ -994,7 +999,7 @@ function fmtDateTime(ts) {
   const d = new Date(ts * 1000);
   return `${fmtDate(ts)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
-function radius(n) { return 6 + (n.importance || 0.5) * 8; }
+function radius(n) { return 6 + (n.importance ?? 0.5) * 8; }
 // Keep nodes usable across a very wide zoom range: spatial distance scales
 // normally, while glyphs scale sub-linearly so they neither disappear nor
 // become giant blobs.
@@ -1494,8 +1499,7 @@ function draw() {
 
     ctx.strokeStyle = projectHex;
     ctx.lineWidth = 1;
-    for (const n of visNodes) {
-      if (n.project_id !== slug) continue;
+    for (const n of (visNodesByProject.get(slug) || [])) {
       const [nx, ny] = worldToScreen(n.x, n.y);
       const dx = nx - x, dy = ny - y;
       const bend = ((strHash(String(n.id)) % 21) - 10) * 0.7;
@@ -1635,7 +1639,7 @@ function draw() {
     ctx.fillStyle = css["--text-primary"];
     ctx.font = "650 12px -apple-system, sans-serif";
     ctx.fillText(pretty.length > 25 ? pretty.slice(0, 24) + "…" : pretty, x, y + hubR + 20);
-    const count = visNodes.reduce((sum, n) => sum + (n.project_id === slug ? 1 : 0), 0);
+    const count = (visNodesByProject.get(slug) || []).length;
     ctx.fillStyle = css["--text-muted"]; ctx.font = "9px -apple-system, sans-serif";
     ctx.fillText(`${count} memories`, x, y + hubR + 33);
   }
@@ -2352,7 +2356,8 @@ function applyTheme(t) {
   readCss(); buildChips(lastSlugs); renderList(); invalidate();
 }
 $("themeBtn").onclick = () => {
-  const cur = localStorage.getItem(THEME_KEY) || "dark";
+  const stored = localStorage.getItem(THEME_KEY);
+  const cur = THEMES.includes(stored) ? stored : "dark";  // migrate legacy "auto" value
   const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
   try { localStorage.setItem(THEME_KEY, next); } catch {}
   applyTheme(next);
@@ -2493,7 +2498,7 @@ $("homeTitle").onclick = () => {
   select(null);
   projectOffsets.clear(); projectSpacing = 1;
   $("projectSpacing").value = "1"; $("projectSpacingVal").textContent = "100%";
-  layoutGalaxies(projectCountsCache, lastSlugs); placeVisibleNodes(); saveProjectLayout();
+  layoutGalaxies(projectCountsCache, lastSlugs); rebuildVisible(); saveProjectLayout();
   fitView();
 };
 $("legendBtn").onclick = () => {
