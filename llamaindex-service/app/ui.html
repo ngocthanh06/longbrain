@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hermes Memory Graph</title>
+<title>Longbrain Memory Atlas</title>
 <style>
   :root {
     color-scheme: light;
@@ -374,43 +374,43 @@
      ============================================================== */
   :root, :root[data-theme="dark"] {
     color-scheme: dark;
-    --surface-0: #050914;
-    --surface-1: #080e1b;
-    --surface-2: #10192a;
-    --surface-3: #18243a;
-    --border: rgba(150, 170, 215, .14);
-    --border-strong: rgba(164, 184, 234, .26);
-    --text-primary: #f4f7ff;
-    --text-secondary: #aeb9d1;
-    --text-muted: #697791;
-    --edge: #52617c;
-    --accent: #7c8cff;
-    --accent-2: #49d7c3;
-    --glow: rgba(124, 140, 255, .12);
-    --danger: #ff6b7a;
+    --surface-0: #090a0a;
+    --surface-1: #0d0e0e;
+    --surface-2: #151616;
+    --surface-3: #20201d;
+    --border: rgba(232, 197, 129, .13);
+    --border-strong: rgba(232, 197, 129, .27);
+    --text-primary: #f5f2e9;
+    --text-secondary: #aaa9a3;
+    --text-muted: #6f706b;
+    --edge: #504a3e;
+    --accent: #e8c581;
+    --accent-2: #91ae7d;
+    --glow: rgba(232, 197, 129, .11);
+    --danger: #df7474;
     --shadow: 0 24px 80px rgba(0, 0, 0, .42);
-    --s1: #73a7ff; --s2: #49d7c3; --s3: #ffc765; --s4: #a78bfa;
-    --other: #78869f;
+    --s1: #e8c581; --s2: #b88aff; --s3: #f8e3b4; --s4: #91ae7d;
+    --other: #777772;
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --surface-0: #eef2f8;
-    --surface-1: #f8faff;
-    --surface-2: #edf1f8;
-    --surface-3: #e1e7f2;
-    --border: rgba(49, 65, 98, .12);
-    --border-strong: rgba(49, 65, 98, .22);
-    --text-primary: #151b2b;
-    --text-secondary: #4d5970;
-    --text-muted: #8490a7;
-    --edge: #a5aec0;
-    --accent: #5867e8;
-    --accent-2: #008e80;
-    --glow: rgba(88, 103, 232, .10);
-    --danger: #d64256;
-    --shadow: 0 24px 70px rgba(40, 52, 78, .18);
-    --s1: #3978da; --s2: #008e80; --s3: #bf7900; --s4: #7652cf;
-    --other: #79859b;
+    --surface-0: #f3ecdc;
+    --surface-1: #fbf6ea;
+    --surface-2: #eee4d0;
+    --surface-3: #e3d4b8;
+    --border: rgba(73, 56, 30, .14);
+    --border-strong: rgba(73, 56, 30, .27);
+    --text-primary: #1f1b14;
+    --text-secondary: #625946;
+    --text-muted: #958972;
+    --edge: #b8a98e;
+    --accent: #9b6f2e;
+    --accent-2: #5f7854;
+    --glow: rgba(155, 111, 46, .11);
+    --danger: #b84e4e;
+    --shadow: 0 24px 70px rgba(78, 58, 26, .16);
+    --s1: #9b6f2e; --s2: #7652a1; --s3: #b07d24; --s4: #5f7854;
+    --other: #8e816b;
   }
   html, body { height: 100%; overflow: hidden; }
   body {
@@ -432,15 +432,17 @@
     color: var(--text-primary); background: none; border: 0; text-align: left; cursor: pointer;
   }
   .brand-mark {
-    position: relative; width: 34px; height: 34px; flex: none; border-radius: 11px;
-    background: radial-gradient(circle at 35% 30%, #9ea9ff, var(--accent) 42%, #4a3bc8 100%);
-    box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 42%, transparent), inset 0 1px 1px rgba(255,255,255,.3);
+    position: relative; width: 34px; height: 34px; flex: none; border-radius: 50%;
+    border: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+    background: radial-gradient(circle, color-mix(in srgb, var(--accent) 10%, transparent), transparent 67%);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 18%, transparent);
   }
   .brand-mark::before, .brand-mark::after {
-    content: ""; position: absolute; border: 1px solid rgba(255,255,255,.65); border-radius: 50%;
-    width: 42px; height: 15px; left: -5px; top: 9px; transform: rotate(-24deg);
+    content: ""; position: absolute; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 50%;
+    width: 42px; height: 17px; left: -5px; top: 8px; transform: rotate(-28deg);
   }
-  .brand-mark::after { width: 4px; height: 4px; left: 24px; top: 6px; background: #fff; border: 0; }
+  .brand-mark::after { width: 17px; height: 42px; left: 8px; top: -5px; transform: rotate(-28deg); }
+  .brand-mark i { position: absolute; z-index: 2; width: 6px; height: 6px; left: 13px; top: 13px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 13px var(--accent); }
   .brand strong { display: block; font-size: 15px; letter-spacing: -.02em; }
   .brand small { display: block; color: var(--text-muted); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; }
   .primary-nav { display: grid; gap: 4px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
@@ -524,8 +526,8 @@
     position: relative; min-width: 0; min-height: 0; overflow: hidden;
     isolation: isolate;
     background:
-      radial-gradient(circle at 72% 18%, rgba(49, 88, 166, .13), transparent 34%),
-      radial-gradient(circle at 24% 84%, rgba(101, 55, 161, .11), transparent 38%),
+      radial-gradient(circle at 72% 18%, rgba(232, 197, 129, .09), transparent 34%),
+      radial-gradient(circle at 24% 84%, rgba(121, 76, 161, .08), transparent 38%),
       var(--surface-0);
   }
   /* A diffuse Milky Way, never a solid stripe: layered gas clouds create
@@ -537,17 +539,17 @@
   #stage::before {
     opacity: .82; filter: blur(18px) saturate(1.18); mix-blend-mode: screen;
     background:
-      radial-gradient(ellipse 72% 9% at 50% 50%, rgba(235, 226, 255, .13), transparent 68%),
-      radial-gradient(ellipse 64% 15% at 46% 48%, rgba(104, 92, 210, .18), transparent 72%),
-      radial-gradient(ellipse 28% 20% at 30% 51%, rgba(55, 123, 201, .15), transparent 74%),
-      radial-gradient(ellipse 25% 18% at 68% 47%, rgba(148, 76, 185, .15), transparent 72%),
-      radial-gradient(ellipse 15% 12% at 53% 53%, rgba(232, 185, 139, .10), transparent 76%);
+      radial-gradient(ellipse 72% 9% at 50% 50%, rgba(248, 227, 180, .13), transparent 68%),
+      radial-gradient(ellipse 64% 15% at 46% 48%, rgba(157, 117, 57, .13), transparent 72%),
+      radial-gradient(ellipse 28% 20% at 30% 51%, rgba(109, 136, 104, .10), transparent 74%),
+      radial-gradient(ellipse 25% 18% at 68% 47%, rgba(139, 87, 191, .10), transparent 72%),
+      radial-gradient(ellipse 15% 12% at 53% 53%, rgba(232, 197, 129, .12), transparent 76%);
   }
   #stage::after {
     opacity: .48; mix-blend-mode: screen;
     background-image:
       radial-gradient(circle, rgba(255,255,255,.72) 0 1px, transparent 1.35px),
-      radial-gradient(circle, rgba(181,199,255,.54) 0 .7px, transparent 1.15px),
+      radial-gradient(circle, rgba(248,227,180,.54) 0 .7px, transparent 1.15px),
       radial-gradient(circle, rgba(241,205,166,.42) 0 .65px, transparent 1.05px);
     background-size: 31px 29px, 47px 41px, 73px 61px;
     background-position: 3px 7px, 19px 13px, 37px 31px;
@@ -633,7 +635,7 @@
 <aside id="sidebar">
   <button class="brand" id="homeTitle" title="Reset view and fit all memories">
     <span class="brand-mark"><i></i></span>
-    <span><strong>Hermes</strong><small>Memory atlas</small></span>
+    <span><strong>Longbrain</strong><small>Memory atlas</small></span>
   </button>
 
   <nav class="primary-nav" aria-label="Views">
@@ -800,8 +802,8 @@ const TYPE_GLYPH = { fact: "●", preference: "☄", decision: "✦", task: "◌
 const TYPE_SLOTS = ["--s1", "--s2", "--s3", "--s4"];
 const TYPE_COLOR = { fact: "--s1", preference: "--s2", decision: "--s3", task: "--s4" };
 const PROJECT_PALETTE = [
-  "#7c5cff", "#3b82f6", "#4ade80", "#f6bd4b", "#ef72bd",
-  "#35c6e8", "#a78bfa", "#fb7185", "#2dd4bf", "#f59e0b",
+  "#e8c581", "#b88aff", "#91ae7d", "#d9906f", "#75a4bf",
+  "#c9b06f", "#c780a2", "#8f8bd6", "#d5a85b", "#7aa99b",
 ];
 
 let nodes = [], edges = [], adj = new Map(), edgesByNode = new Map(), nodeById = new Map();
