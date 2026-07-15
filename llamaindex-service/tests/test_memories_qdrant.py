@@ -560,6 +560,29 @@ def test_add_message_retry_preserves_consolidated_status(client):
     assert memory_store.fetch_unconsolidated(client, "s1") == []
 
 
+def test_add_message_retry_of_second_occurrence_is_idempotent(client):
+    """A/B, then C/D, then A/B again (a genuine repeat, disambiguated), then
+    a RETRY of that second A/B — the retry must land on the same
+    disambiguated point, not generate yet another duplicate (previously the
+    disambiguator was str(now), so a retry of an already-disambiguated
+    occurrence could never recompute the same id)."""
+    embed = FakeEmbed()
+
+    def pair(u, a):
+        memory_store.add_message(client, embed, "s1", "user", u, sibling_content=a)
+        memory_store.add_message(client, embed, "s1", "assistant", a, sibling_content=u)
+
+    pair("A", "B")
+    pair("C", "D")
+    pair("A", "B")  # occurrence 2, disambiguated
+    before = client.count(config.CHAT_HISTORY_COLLECTION, exact=True).count
+
+    pair("A", "B")  # retry of occurrence 2
+    after = client.count(config.CHAT_HISTORY_COLLECTION, exact=True).count
+
+    assert after == before
+
+
 def test_mark_consolidated_roundtrip(client):
     embed = FakeEmbed()
     memory_store.add_message(client, embed, "s1", "user", "hello")

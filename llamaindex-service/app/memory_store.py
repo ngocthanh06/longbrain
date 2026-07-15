@@ -148,7 +148,44 @@ def add_message(
             collection_name=config.CHAT_HISTORY_COLLECTION, count_filter=flt, exact=True,
         ).count
         if newer_activity:
-            point_id = message_point_id(user_id, session_id, role, content, disambiguator=str(now))
+            # A genuine repeat needs a disambiguated id — but str(now) made
+            # that id itself non-deterministic, so a RETRY of THIS repeat
+            # (occurrence 2+) could never land on the same id twice and kept
+            # generating fresh duplicates on every retry. Anchor the
+            # disambiguator on the id of the most recent OTHER point in the
+            # session instead (excluding this content and the sibling's, so
+            # this call's own pair never anchors on itself): a retry of the
+            # same occurrence always arrives with the exact same "nothing
+            # else happened since" state, so it recomputes the identical
+            # anchor and lands back on the identical id — while a genuinely
+            # later occurrence has a different (newer) anchor and gets its
+            # own distinct id.
+            exclude_contents = {content}
+            if sibling_content:
+                exclude_contents.add(sibling_content)
+            anchor_flt = _user_filter(
+                user_id,
+                [qmodels.FieldCondition(key="session_id", match=qmodels.MatchValue(value=session_id))],
+            )
+            anchor_flt.must_not = [
+                qmodels.FieldCondition(key="content", match=qmodels.MatchValue(value=c))
+                for c in exclude_contents
+            ]
+            anchor_points = _recent_points(
+                client, config.CHAT_HISTORY_COLLECTION, anchor_flt,
+                with_payload=False, limit=1,
+            )
+            anchor_key = str(anchor_points[0].id) if anchor_points else "genesis"
+            point_id = message_point_id(user_id, session_id, role, content, disambiguator=anchor_key)
+            existing = client.retrieve(
+                collection_name=config.CHAT_HISTORY_COLLECTION, ids=[point_id],
+                with_payload=["consolidated"],
+            )
+            # Same preservation rule as the base-id retry case below: this
+            # anchor-derived id being already present means a retry of this
+            # exact occurrence, not a new one (a genuinely new occurrence
+            # would anchor on a different, newer point).
+            consolidated = bool(existing[0].payload.get("consolidated")) if existing else False
         else:
             # A genuine retry reuses the SAME point id, so this upsert would
             # otherwise silently reset an already-consolidated turn back to
