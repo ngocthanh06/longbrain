@@ -373,14 +373,34 @@ def save_session_summary(
     user_id: str = config.USER_ID,
     project_id: str = config.DEFAULT_PROJECT,
     source_agent: str = "",
+    covers_through: float = 0.0,
 ) -> dict:
     """Store the structured summary of a finished session (goal, decisions,
     unresolved). Lives in the memories collection as type=session_summary but
     is NOT a fact: excluded from fact search/listing, surfaced by recall in
-    place of that session's raw snippets."""
+    place of that session's raw snippets.
+
+    `covers_through` (optional, epoch seconds) is the timestamp of the newest
+    turn this summary actually reflects. A backlog longer than one
+    consolidation pass gets processed newest-chunk-first (see
+    consolidation._covered_points), so a LATER pass over the same session can
+    end up summarizing an OLDER leftover chunk after a fresher one already
+    produced a summary — passing `covers_through` lets that later, older-
+    content pass be skipped instead of regressing the summary backwards in
+    time. Callers that don't track this (e.g. an explicitly provided summary
+    via the MCP save_memories tool) simply omit it and always overwrite, as
+    before."""
     text = (text or "").strip()
     if not text or not session_id:
         return {"status": "skipped"}
+    point_id = summary_point_id(user_id, session_id)
+    if covers_through:
+        existing = client.retrieve(
+            collection_name=config.MEMORIES_COLLECTION, ids=[point_id],
+            with_payload=["covers_through"],
+        )
+        if existing and (existing[0].payload.get("covers_through") or 0) > covers_through:
+            return {"status": "skipped_stale", "session_id": session_id}
     payload = {
         "user_id": user_id,
         "session_id": session_id,
@@ -388,13 +408,14 @@ def save_session_summary(
         "type": "session_summary",
         "text": text,
         "created_at": time.time(),
+        "covers_through": covers_through,
     }
     if source_agent:
         payload["source_agent"] = source_agent
     client.upsert(
         collection_name=config.MEMORIES_COLLECTION,
         points=[qmodels.PointStruct(
-            id=summary_point_id(user_id, session_id),
+            id=point_id,
             vector=hybrid.point_vector(
                 client, config.MEMORIES_COLLECTION,
                 embed_model.get_text_embedding(text), text,

@@ -121,6 +121,20 @@ def pop_handout(session_id: str) -> list:
     return _pending_handouts.pop(session_id, [])
 
 
+def _line_for(p, cap: int = MAX_TRANSCRIPT_CHARS) -> str:
+    """A single point's transcript line, hard-capped at `cap` characters.
+    Without this, one oversized message alone (e.g. a huge pasted log)
+    could exceed MAX_TRANSCRIPT_CHARS by itself — _covered_points always
+    keeps at least the single newest point to guarantee forward progress,
+    so that point's own size must be bounded too, or the "cap" on prompt
+    size isn't actually a cap, and a too-large completion call would keep
+    failing identically on every retry."""
+    content = p.payload["content"]
+    if len(content) > cap:
+        content = content[:cap] + "...[content truncated]"
+    return f"{p.payload['role']}: {content}"
+
+
 def _covered_points(points: list) -> list:
     """The newest-first-selected prefix of `points` that transcript_from_points
     actually keeps when truncating (same budget, same accumulation order) —
@@ -128,7 +142,7 @@ def _covered_points(points: list) -> list:
     saw. Without this, a backlog longer than MAX_TRANSCRIPT_CHARS would have
     its oldest (truncated-out) turns marked consolidated anyway, discarding
     them without the LLM ever having analyzed them."""
-    lines = [f"{p.payload['role']}: {p.payload['content']}" for p in points]
+    lines = [_line_for(p) for p in points]
     if len("\n".join(lines)) <= MAX_TRANSCRIPT_CHARS:
         return points
     kept: list = []
@@ -146,7 +160,7 @@ def _covered_points(points: list) -> list:
 
 def transcript_from_points(points: list) -> str:
     covered = _covered_points(points)
-    lines = [f"{p.payload['role']}: {p.payload['content']}" for p in covered]
+    lines = [_line_for(p) for p in covered]
     transcript = "\n".join(lines)
     if len(covered) < len(points):
         transcript = "[...beginning of conversation truncated...]\n" + transcript
@@ -242,16 +256,22 @@ def consolidate_session(
         client, embed_model, extraction["facts"], user_id, session_id,
         project_id=project_id, source_agent=source_agent, llm=llm,
     )
-    memories.save_session_summary(
-        client, embed_model, session_id, extraction["summary"],
-        user_id=user_id, project_id=project_id, source_agent=source_agent,
-    )
     # Mark consolidated only the points transcript_from_points actually kept
     # (see _covered_points) — a backlog longer than MAX_TRANSCRIPT_CHARS has
     # its oldest turns truncated out of what the LLM saw, and those must
     # stay unconsolidated for the next pass instead of being silently
     # discarded as if they'd been analyzed.
     covered_points = _covered_points(points)
+    # A backlog spanning multiple passes is processed newest-chunk-first, so
+    # a LATER pass covers OLDER leftover material than an earlier pass did —
+    # covers_through lets save_session_summary refuse to regress the summary
+    # backwards in time when that happens.
+    covers_through = max((p.payload.get("timestamp") or 0 for p in covered_points), default=0)
+    memories.save_session_summary(
+        client, embed_model, session_id, extraction["summary"],
+        user_id=user_id, project_id=project_id, source_agent=source_agent,
+        covers_through=covers_through,
+    )
     memory_store.mark_consolidated(client, [p.id for p in covered_points])
     return {"status": "ok", "turns_processed": len(covered_points), "project": project_id,
             "facts": saved, "summary_saved": bool(extraction["summary"].strip())}

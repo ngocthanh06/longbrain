@@ -262,12 +262,14 @@ def memory_append(payload: MemoryAppendRequest, background_tasks: BackgroundTask
         memory_store.add_message(
             client, embed, payload.session_id, "user", payload.user_message,
             project_id=project_id, source_agent=payload.source_agent,
+            sibling_content=payload.assistant_response,
         )
         appended += 1
     if payload.assistant_response.strip():
         memory_store.add_message(
             client, embed, payload.session_id, "assistant", payload.assistant_response,
             project_id=project_id, source_agent=payload.source_agent,
+            sibling_content=payload.user_message,
         )
         appended += 1
     meta = qdrant_setup.get_meta(client) or {}

@@ -103,6 +103,7 @@ def add_message(
     user_id: str = config.USER_ID,
     project_id: str = config.DEFAULT_PROJECT,
     source_agent: str = "",
+    sibling_content: str = "",
 ) -> str:
     point_id = message_point_id(user_id, session_id, role, content)
     now = time.time()
@@ -120,13 +121,29 @@ def add_message(
         # session in between two attempts at writing the same one). If the
         # session has moved on since the existing point was written, this
         # match is a genuine new occurrence, not a retry.
+        #
+        # A caller writes a user+assistant PAIR per call (one /memory/append
+        # = one turn), so a retry of that call rewrites BOTH messages, each
+        # moments after the other. Without excluding the sibling, checking
+        # the user message would see the (just-written-first-time) assistant
+        # reply as "newer activity" and wrongly conclude the session moved
+        # on — and symmetrically for the assistant message seeing the
+        # sibling user retry. Excluding content matching the sibling from
+        # the count fixes this: it no longer counts as evidence the session
+        # progressed, while a genuine repeat's PRIOR turn still has a
+        # different sibling reply, so it still counts correctly.
+        must_not = (
+            [qmodels.FieldCondition(key="content", match=qmodels.MatchValue(value=sibling_content))]
+            if sibling_content else None
+        )
+        flt = _user_filter(user_id, [
+            qmodels.FieldCondition(key="session_id", match=qmodels.MatchValue(value=session_id)),
+            qmodels.FieldCondition(key="timestamp", range=qmodels.Range(gt=prev_ts)),
+        ])
+        if must_not:
+            flt.must_not = must_not
         newer_activity = client.count(
-            collection_name=config.CHAT_HISTORY_COLLECTION,
-            count_filter=_user_filter(user_id, [
-                qmodels.FieldCondition(key="session_id", match=qmodels.MatchValue(value=session_id)),
-                qmodels.FieldCondition(key="timestamp", range=qmodels.Range(gt=prev_ts)),
-            ]),
-            exact=True,
+            collection_name=config.CHAT_HISTORY_COLLECTION, count_filter=flt, exact=True,
         ).count
         if newer_activity:
             point_id = message_point_id(user_id, session_id, role, content, disambiguator=str(now))
