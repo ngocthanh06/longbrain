@@ -38,7 +38,7 @@ means writing a new adapter — the system's architecture doesn't change.
 
 ### Memory Atlas
 
-![Longbrain Memory Atlas showing color-coded project galaxies](docs/assets/memory-atlas.jpg)
+![Longbrain Memory Atlas showing color-coded project galaxies](docs/assets/memory-atlas.png)
 
 Each project is a movable, color-coded galaxy. Memories form stable rings
 around their project hub, while filters, adjustable spacing and wide-range
