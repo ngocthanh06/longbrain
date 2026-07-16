@@ -48,12 +48,12 @@ zoom keep large collections readable.
 
 ## Verified by evals, not claims
 
-- **124 tests** (pytest, run in-container) — idempotency, dedup/supersede,
+- **187 tests** (pytest, run in-container) — idempotency, dedup/supersede,
   recall filtering, hook payload parsing, adapter config patching.
-- **Recall regression eval**: 11/11 expected hits, **0 violations** (no
-  irrelevant memory leaked into the context), ~11k chars injected across
-  the whole eval set — gated against a committed baseline
-  (`scripts/recall_eval.py`).
+- **Recall regression eval**: 12/13 expected hits, **0 violations** (no
+  irrelevant memory leaked into the context), 11,460 chars injected across
+  the whole eval set. The tracked miss is a genuine two-hop graph query;
+  results are gated against a committed baseline (`scripts/recall_eval.py`).
 - **Hybrid BM25 measured on a real 450-chunk corpus**: exact-token hit@top-2
   went 1/12 (dense-only) → **11/12**; prompts without identifier-like tokens
   return byte-identical results.
