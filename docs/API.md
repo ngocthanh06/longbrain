@@ -53,6 +53,58 @@ curl localhost:8800/health
 }
 ```
 
+### Stateless model runtime
+
+These endpoints expose model capabilities without reading or writing Qdrant,
+memory, chat history, or document collections. Both default to
+`local_only=true`; callers must explicitly opt in before a cloud provider may
+receive their text.
+
+#### `POST /embeddings`
+
+Create embeddings for caller-owned text. `profile=default` uses the global
+memory embedder; `profile=document` uses `DOC_EMBED_*`. The response
+fingerprint is stable for one vector space. Clients that persist vectors must
+re-index them when it changes.
+
+Limits: 64 texts per call, 50,000 characters per text, and 250,000 characters
+total.
+
+```bash
+curl -X POST localhost:8800/embeddings -H 'Content-Type: application/json' \
+  -d '{"profile":"document","texts":["first passage","search query"]}'
+```
+
+```json
+{
+  "vectors": [[0.01, 0.02], [0.03, 0.04]],
+  "profile": "document",
+  "provider": "huggingface",
+  "model": "BAAI/bge-m3",
+  "dimension": 1024,
+  "fingerprint": "huggingface:BAAI/bge-m3:1024"
+}
+```
+
+#### `POST /completion`
+
+Run one stateless completion. This endpoint does not retrieve documents or
+memory, read/write chat history, or persist the prompt. Use it when the caller
+has already selected the complete context, such as answering from supplied
+passages only.
+
+```bash
+curl -X POST localhost:8800/completion -H 'Content-Type: application/json' \
+  -d '{"prompt":"Answer using only these passages...","temperature":0.1,"max_tokens":1024}'
+```
+
+```json
+{"text": "...", "provider": "ollama", "model": "qwen3:latest"}
+```
+
+`local_only=true` is the default for both endpoints. Set it to `false` only
+when sending the input to the configured cloud provider is intentional.
+
 ### Knowledge base (L4)
 
 #### `POST /ingest/text`
@@ -431,8 +483,12 @@ requested explicitly.
 |---|---|---|
 | `400` | most POST/PATCH | Empty `query`/`text`, invalid slug (must match `[a-z0-9][a-z0-9_-]{0,63}`), invalid `type`, malformed metadata JSON, invalid transfer bundle, or missing `confirm=DELETE ALL`. |
 | `404` | fact/session endpoints | No record with that id. |
+| `403 local_provider_required` | `/embeddings`, `/completion` | `local_only=true` but the selected provider is not local. Explicitly opt in with `local_only=false` only when cloud processing is acceptable. |
+| `413 embedding_input_too_large` | `/embeddings` | The batch exceeds the per-text or total character limit. Split it into smaller batches. |
 | `409` | `POST /memory/consolidate` (foreground) | Consolidation could not run (e.g. no LLM configured) — use `background: true` or the MCP tool flow instead. |
 | `503` | `POST /chat` | `LLM_PROVIDER=none` — /chat is disabled by design; agents should use `/memory/*` + `/query`. |
-| `503 doc_embedder_unavailable` | `/query`, `/ingest/*`, `/chat`, `/memory/import` | The separate document embedder (`DOC_EMBED_*`) is configured but could not load/download. Memory endpoints keep working; check `doc_embedder_error` in `GET /health`. Clients must show this as "document search unavailable", NOT as "no matching documents". |
+| `503 doc_embedder_unavailable` | `/query`, `/ingest/*`, `/chat`, `/embeddings` with `profile=document`, `/memory/import` when documents are present | The separate document embedder (`DOC_EMBED_*`) is configured but could not load/download. Memory endpoints keep working; check `doc_embedder_error` in `GET /health`. Clients must show this as "document search unavailable", NOT as "no matching documents". |
+| `503 completion_unavailable` | `/completion` | `LLM_PROVIDER=none`; configure an LLM before using stateless completion. |
+| `503 embedding_failed` / `completion_failed` | `/embeddings`, `/completion` | The selected local or explicitly allowed cloud provider failed. |
 | `503 optional_features_unavailable` | `POST /query/explain` | Neither the reranker (`DOC_RERANK`) nor a local LLM (Ollama) is available. |
 | connection refused | everything | Service not running — `docker compose up -d`, then check `GET /health`. |

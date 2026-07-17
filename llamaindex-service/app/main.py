@@ -5,6 +5,7 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -121,6 +122,19 @@ class QueryResponse(BaseModel):
     results: list[str]
 
 
+class EmbeddingsRequest(BaseModel):
+    texts: list[str] = Field(min_length=1, max_length=64)
+    profile: Literal["default", "document"] = "default"
+    local_only: bool = True
+
+
+class CompletionRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100_000)
+    temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=1024, ge=1, le=4096)
+    local_only: bool = True
+
+
 class MemoryAppendRequest(BaseModel):
     session_id: str
     user_message: str = ""
@@ -202,6 +216,117 @@ def health():
         "schema_version": meta.get("schema_version"),
         "last_written_at": meta.get("last_written_at"),
         "collections": counts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stateless model runtime capabilities
+# ---------------------------------------------------------------------------
+_LOCAL_EMBED_PROVIDERS = {"fastembed", "huggingface", "ollama"}
+_LOCAL_LLM_PROVIDERS = {"ollama"}
+_MAX_EMBED_TEXT_CHARS = 50_000
+_MAX_EMBED_TOTAL_CHARS = 250_000
+
+
+def _runtime_embedding_profile(profile: str):
+    if profile == "document":
+        model = state.get("doc_embed_model")
+        if model is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "doc_embedder_unavailable",
+                    "message": "Document embedding model is not available: "
+                               + (state.get("doc_embed_error") or "unknown error"),
+                },
+            )
+        provider = config.DOC_EMBED_PROVIDER or config.EMBED_PROVIDER
+        model_name = config.DOC_EMBED_MODEL or config.EMBED_MODEL
+        dimension = state.get("doc_embed_dim")
+    else:
+        model = state["embed_model"]
+        provider = config.EMBED_PROVIDER
+        model_name = config.EMBED_MODEL
+        dimension = state.get("embed_dim")
+    return model, provider, model_name, dimension
+
+
+@app.post("/embeddings")
+def embeddings(payload: EmbeddingsRequest):
+    """Embed caller-owned text without reading or writing any collection."""
+    if any(not text.strip() for text in payload.texts):
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_embedding_input",
+            "message": "texts must not contain empty strings",
+        })
+    if any(len(text) > _MAX_EMBED_TEXT_CHARS for text in payload.texts):
+        raise HTTPException(status_code=413, detail={
+            "code": "embedding_input_too_large",
+            "message": f"each text must be at most {_MAX_EMBED_TEXT_CHARS} characters",
+        })
+    if sum(len(text) for text in payload.texts) > _MAX_EMBED_TOTAL_CHARS:
+        raise HTTPException(status_code=413, detail={
+            "code": "embedding_input_too_large",
+            "message": f"total text must be at most {_MAX_EMBED_TOTAL_CHARS} characters",
+        })
+
+    model, provider, model_name, dimension = _runtime_embedding_profile(payload.profile)
+    if payload.local_only and provider not in _LOCAL_EMBED_PROVIDERS:
+        raise HTTPException(status_code=403, detail={
+            "code": "local_provider_required",
+            "message": f"Embedding provider {provider!r} is not local",
+        })
+    try:
+        vectors = model.get_text_embedding_batch(payload.texts)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "embedding_failed",
+            "message": str(exc),
+        }) from exc
+    return {
+        "vectors": vectors,
+        "profile": payload.profile,
+        "provider": provider,
+        "model": model_name,
+        "dimension": dimension,
+        "fingerprint": f"{provider}:{model_name}:{dimension}",
+    }
+
+
+@app.post("/completion")
+def completion(payload: CompletionRequest):
+    """Run one stateless completion with no retrieval, history, or writes."""
+    if not payload.prompt.strip():
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_completion_input",
+            "message": "prompt must not be empty",
+        })
+    llm = state.get("llm")
+    if llm is None:
+        raise HTTPException(status_code=503, detail={
+            "code": "completion_unavailable",
+            "message": "No LLM configured (LLM_PROVIDER=none)",
+        })
+    if payload.local_only and config.LLM_PROVIDER not in _LOCAL_LLM_PROVIDERS:
+        raise HTTPException(status_code=403, detail={
+            "code": "local_provider_required",
+            "message": f"LLM provider {config.LLM_PROVIDER!r} is not local",
+        })
+    try:
+        result = llm.complete(
+            payload.prompt,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "completion_failed",
+            "message": str(exc),
+        }) from exc
+    return {
+        "text": getattr(result, "text", str(result)),
+        "provider": config.LLM_PROVIDER,
+        "model": config.LLM_MODEL,
     }
 
 
