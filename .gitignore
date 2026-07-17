@@ -23,3 +23,9 @@ venv/
 
 # --- Local landing page (kept outside version control) ---
 landingpage/
+
+# --- Local document-search evaluation data ---
+# These files are derived from private document corpora and may contain
+# filenames, ticket IDs, and query descriptions that must not be published.
+llamaindex-service/evals/search_eval.local.json
+llamaindex-service/evals/search_eval_results_*.json

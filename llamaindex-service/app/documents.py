@@ -25,6 +25,7 @@ EXCLUDED_METADATA_KEYS = [
     "user_id", "project_id", "stored_path", "document_id",
     "file_path", "file_name", "file_type", "file_size",
     "creation_date", "last_modified_date", "last_accessed_date",
+    "enriched",  # bookkeeping flag on AI-summary chunks (app/enrich.py)
 ]
 
 

@@ -1,0 +1,12 @@
+{
+  "_comment": "Public schema example only. Copy to search_eval.local.json and replace these fictional cases with cases from your local corpus. The local file and generated results are gitignored.",
+  "cases": [
+    {
+      "id": "example-cross-lingual-01",
+      "query": "tai lieu noi ve hien thi thong bao sau khi nhap du lieu",
+      "expected_sources": ["example_import_completion_ja.md"],
+      "doc_language": "ja",
+      "difficulty": "vague_cross_lingual"
+    }
+  ]
+}

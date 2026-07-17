@@ -7,28 +7,47 @@ be importable at runtime.
 from app import config
 
 
-def build_embed_model():
-    if config.EMBED_PROVIDER == "fastembed":
+def _build_embed(provider: str, model: str):
+    if provider == "fastembed":
         from llama_index.embeddings.fastembed import FastEmbedEmbedding
 
-        return FastEmbedEmbedding(model_name=config.EMBED_MODEL)
-    if config.EMBED_PROVIDER == "ollama":
+        return FastEmbedEmbedding(model_name=model)
+    if provider == "huggingface":
+        # sentence-transformers in-process; the only local path for models
+        # fastembed lacks (BAAI/bge-m3). Weights are cached under HF_HOME
+        # (a /data path — persists across container recreation).
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+        return HuggingFaceEmbedding(model_name=model, normalize=True)
+    if provider == "ollama":
         from llama_index.embeddings.ollama import OllamaEmbedding
 
-        return OllamaEmbedding(
-            model_name=config.EMBED_MODEL, base_url=config.OLLAMA_BASE_URL
-        )
-    if config.EMBED_PROVIDER == "openai":
+        return OllamaEmbedding(model_name=model, base_url=config.OLLAMA_BASE_URL)
+    if provider == "openai":
         from llama_index.embeddings.openai import OpenAIEmbedding
 
-        return OpenAIEmbedding(model=config.EMBED_MODEL)
-    if config.EMBED_PROVIDER == "nvidia":
+        return OpenAIEmbedding(model=model)
+    if provider == "nvidia":
         from llama_index.embeddings.nvidia import NVIDIAEmbedding
 
-        return NVIDIAEmbedding(model=config.EMBED_MODEL)
+        return NVIDIAEmbedding(model=model)
     raise RuntimeError(
-        f"Unknown EMBED_PROVIDER={config.EMBED_PROVIDER!r} "
-        "(expected fastembed | ollama | openai | nvidia)"
+        f"Unknown embed provider {provider!r} "
+        "(expected fastembed | huggingface | ollama | openai | nvidia)"
+    )
+
+
+def build_embed_model():
+    return _build_embed(config.EMBED_PROVIDER, config.EMBED_MODEL)
+
+
+def build_doc_embed_model(global_embed_model):
+    """The documents-collection embedder (SEARCH_SPEC constraint 1).
+    Returns the global model unchanged when DOC_EMBED_* is not configured."""
+    if not config.DOC_EMBED_MODEL:
+        return global_embed_model
+    return _build_embed(
+        config.DOC_EMBED_PROVIDER or config.EMBED_PROVIDER, config.DOC_EMBED_MODEL
     )
 
 

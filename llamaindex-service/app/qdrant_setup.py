@@ -89,7 +89,41 @@ def touch_meta(client: QdrantClient) -> float:
     return now
 
 
-def ensure_all(client: QdrantClient, embed_dim: int) -> None:
+def record_doc_space(client: QdrantClient, provider: str, model: str, dim: int) -> None:
+    """Stamp the document-embedding space in meta. Only
+    scripts/migrate_doc_embed.py calls this, and only after the restored
+    point count is verified — see ensure_all(allow_doc_space_change=...)."""
+    client.set_payload(
+        collection_name=config.META_COLLECTION,
+        payload={"doc_embed_provider": provider, "doc_embed_model": model,
+                 "doc_embed_dim": dim},
+        points=[META_POINT_ID],
+    )
+
+
+def ensure_all(
+    client: QdrantClient,
+    embed_dim: int,
+    doc_embed_dim: int | None = None,
+    allow_doc_space_change: bool = False,
+) -> None:
+    """`doc_embed_dim` is the documents-collection vector size when a separate
+    doc embedder is configured (SEARCH_SPEC constraint 1); None = documents
+    share the global embedder. Pass None also when the doc embedder failed to
+    load — the doc-space checks are then skipped and the rest still boots.
+
+    `allow_doc_space_change` is reserved for scripts/migrate_doc_embed.py:
+    changing the doc embedder is exactly what a migration does, so the
+    doc-space mismatch refusal must not fire there (a lean install records
+    the global embedder as the doc space, which would deadlock the upgrade).
+    In that mode the recorded doc_embed_* meta is left untouched — the
+    migration stamps the new space via record_doc_space() only after the
+    restored point count is verified, so a migration that dies mid-restore
+    keeps refusing normal boots instead of serving a partial collection."""
+    doc_dim_effective = doc_embed_dim if doc_embed_dim is not None else embed_dim
+    doc_model = config.DOC_EMBED_MODEL or config.EMBED_MODEL
+    doc_provider = (config.DOC_EMBED_PROVIDER or config.EMBED_PROVIDER) \
+        if config.DOC_EMBED_MODEL else config.EMBED_PROVIDER
     meta = get_meta(client)
     if meta is not None:
         stored_model = meta.get("embed_model")
@@ -112,6 +146,24 @@ def ensure_all(client: QdrantClient, embed_dim: int) -> None:
                 "Either restore the previous EMBED_PROVIDER/EMBED_MODEL, or "
                 "start fresh (docker compose down -v) / re-embed into new "
                 "collections before switching."
+            )
+        # Doc-space guard — null-safe: meta written before the doc fields
+        # existed skips the comparison (the collection-dim check below still
+        # catches a hard mismatch).
+        stored_doc_model = meta.get("doc_embed_model")
+        stored_doc_provider = meta.get("doc_embed_provider")
+        if not allow_doc_space_change and doc_embed_dim is not None and stored_doc_model and (
+            stored_doc_model != doc_model
+            or meta.get("doc_embed_dim") != doc_dim_effective
+            or (stored_doc_provider and stored_doc_provider != doc_provider)
+        ):
+            raise RuntimeError(
+                "Document-embedding mismatch: documents on disk were embedded "
+                f"with {stored_doc_provider or 'unknown provider'}/"
+                f"{stored_doc_model!r} (dim={meta.get('doc_embed_dim')}) but "
+                f"the service is configured with {doc_provider!r}/{doc_model!r} "
+                f"(dim={doc_dim_effective}). Restore the previous DOC_EMBED_* "
+                "or run scripts/migrate_doc_embed.py to re-embed."
             )
 
     keyword = qmodels.PayloadSchemaType.KEYWORD
@@ -140,14 +192,18 @@ def ensure_all(client: QdrantClient, embed_dim: int) -> None:
     # QdrantVectorStore would otherwise create it on first insert WITHOUT the
     # sparse vector, permanently locking hybrid out of L4). Metadata keys
     # land directly in the Qdrant payload, so the indexes work the same.
-    _ensure_collection(client, config.DOCUMENTS_COLLECTION, embed_dim)
-    doc_dim = _collection_vector_size(client, config.DOCUMENTS_COLLECTION)
-    if doc_dim is not None and doc_dim != embed_dim:
-        raise RuntimeError(
-            f"Collection {config.DOCUMENTS_COLLECTION!r} holds "
-            f"{doc_dim}-dim vectors but the configured embedding produces "
-            f"{embed_dim}-dim. See the embedding-migration note in README."
-        )
+    # It uses the DOC embedder's dimension; the doc-space checks are skipped
+    # entirely when the doc embedder is unavailable (doc search 503s instead).
+    if doc_embed_dim is not None or not config.DOC_EMBED_MODEL:
+        _ensure_collection(client, config.DOCUMENTS_COLLECTION, doc_dim_effective)
+        doc_dim = _collection_vector_size(client, config.DOCUMENTS_COLLECTION)
+        if doc_dim is not None and doc_dim != doc_dim_effective:
+            raise RuntimeError(
+                f"Collection {config.DOCUMENTS_COLLECTION!r} holds "
+                f"{doc_dim}-dim vectors but the configured document embedding "
+                f"produces {doc_dim_effective}-dim. Run scripts/"
+                "migrate_doc_embed.py (see the embedding-migration note in README)."
+            )
     _ensure_indexes(
         client, config.DOCUMENTS_COLLECTION,
         {"project_id": keyword, "user_id": keyword, "stored_path": keyword},
@@ -171,6 +227,16 @@ def ensure_all(client: QdrantClient, embed_dim: int) -> None:
                     "embed_provider": config.EMBED_PROVIDER,
                     "embed_model": config.EMBED_MODEL,
                     "embed_dim": embed_dim,
+                    # Doc space recorded only when it is actually known; on a
+                    # failed doc-embedder load the previous values survive.
+                    **({"doc_embed_provider": doc_provider,
+                        "doc_embed_model": doc_model,
+                        "doc_embed_dim": doc_dim_effective}
+                       if ((doc_embed_dim is not None or not config.DOC_EMBED_MODEL)
+                           and not allow_doc_space_change)
+                       else {k: meta[k] for k in
+                             ("doc_embed_provider", "doc_embed_model", "doc_embed_dim")
+                             if meta and k in meta}),
                     **({"last_written_at": meta.get("last_written_at")}
                        if meta and meta.get("last_written_at") else {}),
                 },

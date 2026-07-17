@@ -14,7 +14,7 @@ from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
-from app import config, consolidation, documents, memories, memory_store, providers, qdrant_setup, scheduler, scope_policy, transfer
+from app import config, consolidation, documents, enrich, memories, memory_store, providers, qdrant_setup, scheduler, scope_policy, transfer
 from app.mcp_server import mcp
 from app.runtime import state
 
@@ -29,24 +29,48 @@ async def lifespan(app: FastAPI):
 
     embed_dim = len(embed_model.get_text_embedding("dimension probe"))
 
+    # Separate documents embedder (SEARCH_SPEC constraint 1/3). Its failure
+    # (model absent + download impossible) must NOT stop the service: memory
+    # search keeps working, document search returns an explicit 503 instead
+    # of silently falling back to a different vector space.
+    doc_embed_model, doc_embed_error = embed_model, ""
+    if config.DOC_EMBED_MODEL:
+        try:
+            doc_embed_model = providers.build_doc_embed_model(embed_model)
+        except Exception as exc:  # noqa: BLE001 — any load/download failure
+            doc_embed_model, doc_embed_error = None, str(exc)
+
+    doc_embed_dim = None
+    if doc_embed_model is not None and doc_embed_model is not embed_model:
+        try:
+            doc_embed_dim = len(doc_embed_model.get_text_embedding("dimension probe"))
+        except Exception as exc:  # noqa: BLE001
+            doc_embed_model, doc_embed_error = None, str(exc)
+
     qdrant_client = QdrantClient(url=config.QDRANT_URL)
-    qdrant_setup.ensure_all(qdrant_client, embed_dim)
+    qdrant_setup.ensure_all(qdrant_client, embed_dim, doc_embed_dim=doc_embed_dim)
     Path(config.DOCUMENTS_DIR).mkdir(parents=True, exist_ok=True)
 
-    vector_store = QdrantVectorStore(
-        client=qdrant_client, collection_name=config.DOCUMENTS_COLLECTION
-    )
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    index = VectorStoreIndex.from_vector_store(
-        vector_store=vector_store, storage_context=storage_context
-    )
+    index = None
+    if doc_embed_model is not None:
+        vector_store = QdrantVectorStore(
+            client=qdrant_client, collection_name=config.DOCUMENTS_COLLECTION
+        )
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        index = VectorStoreIndex.from_vector_store(
+            vector_store=vector_store, storage_context=storage_context,
+            embed_model=doc_embed_model,
+        )
 
     state.update(
         qdrant_client=qdrant_client,
         index=index,
         embed_model=embed_model,
+        doc_embed_model=doc_embed_model,
+        doc_embed_error=doc_embed_error,
         llm=llm,
         embed_dim=embed_dim,
+        doc_embed_dim=doc_embed_dim if doc_embed_dim is not None else embed_dim,
     )
 
     sweep_task = asyncio.create_task(scheduler.consolidation_loop(state))
@@ -168,6 +192,11 @@ def health():
         "embed_provider": config.EMBED_PROVIDER,
         "embed_model": config.EMBED_MODEL,
         "embed_dim": state.get("embed_dim"),
+        "doc_embed_model": (config.DOC_EMBED_MODEL or config.EMBED_MODEL),
+        "doc_embed_dim": state.get("doc_embed_dim"),
+        "doc_embedder_ready": state.get("doc_embed_model") is not None,
+        "doc_embedder_error": state.get("doc_embed_error") or None,
+        "doc_rerank": config.DOC_RERANK,
         "llm_provider": config.LLM_PROVIDER,
         "llm_model": config.LLM_MODEL if state.get("llm") else None,
         "schema_version": meta.get("schema_version"),
@@ -179,23 +208,47 @@ def health():
 # ---------------------------------------------------------------------------
 # Knowledge base (L4)
 # ---------------------------------------------------------------------------
+def _require_doc_embedder():
+    """SEARCH_SPEC constraint 3: when the doc embedder is unavailable, doc
+    endpoints fail loudly and typed — never fall back to another embedder."""
+    if state.get("doc_embed_model") is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "doc_embedder_unavailable",
+                "message": "Document embedding model is not available: "
+                           + (state.get("doc_embed_error") or "unknown error"),
+            },
+        )
+
+
 @app.post("/ingest/text", response_model=IngestResponse)
-def ingest_text(payload: IngestTextRequest):
+def ingest_text(payload: IngestTextRequest, background_tasks: BackgroundTasks):
+    _require_doc_embedder()
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
     total = documents.ingest_text(
         state["index"], state["qdrant_client"], payload.text, payload.metadata,
         project_id=payload.project_id,
     )
+    # Optional tier: AI summary chunk, background so ingest never waits on
+    # the LLM; a no-op without Ollama. Needs a `source` to group by.
+    if payload.metadata.get("source") and not payload.metadata.get("enriched"):
+        background_tasks.add_task(
+            enrich.enrich_document, state["index"], state["qdrant_client"],
+            payload.metadata["source"], payload.project_id or config.DEFAULT_PROJECT,
+        )
     return IngestResponse(status="ok", total_chunks_indexed=total)
 
 
 @app.post("/ingest/file", response_model=IngestResponse)
 async def ingest_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     metadata: str = Form("{}"),
     project_id: str = Form(config.DEFAULT_PROJECT),
 ):
+    _require_doc_embedder()
     try:
         parsed_metadata = json.loads(metadata) if metadata else {}
     except json.JSONDecodeError as exc:
@@ -223,6 +276,11 @@ async def ingest_file(
         state["index"], state["qdrant_client"], stored, parsed_metadata,
         project_id=project_id,
     )
+    # Optional tier: AI summary chunk (background; no-op without Ollama).
+    background_tasks.add_task(
+        enrich.enrich_document, state["index"], state["qdrant_client"],
+        parsed_metadata["source"], project_id,
+    )
     return IngestResponse(status="ok", total_chunks_indexed=total)
 
 
@@ -236,13 +294,57 @@ def _project_filters(project: str):
 
 @app.post("/query", response_model=QueryResponse)
 def query(payload: QueryRequest):
+    _require_doc_embedder()
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
+    from app import rerank as _rerank
+
+    fetch_k = max(payload.top_k, config.DOC_RERANK_CANDIDATES) \
+        if config.DOC_RERANK else payload.top_k
     retriever = state["index"].as_retriever(
-        similarity_top_k=payload.top_k, filters=_project_filters(payload.project)
+        similarity_top_k=fetch_k, filters=_project_filters(payload.project)
     )
     nodes = retriever.retrieve(payload.query)
-    return QueryResponse(results=[node.node.get_content() for node in nodes])
+    contents = [node.node.get_content() for node in nodes]
+    scores = _rerank.rerank(payload.query, contents)
+    if scores is not None:
+        contents = [c for _, c in
+                    sorted(zip(scores, contents), key=lambda p: -p[0])]
+    return QueryResponse(results=contents[:payload.top_k])
+
+
+class ExplainRequest(BaseModel):
+    query: str
+    text: str
+
+
+@app.post("/query/explain")
+def query_explain(payload: ExplainRequest):
+    """On-demand 'why does this match' (SEARCH_SPEC Sprint 4) — never part
+    of the search hot path. Coarse label from the reranker score (no fake
+    percentage confidence); Vietnamese reason from the local LLM when one is
+    running."""
+    if not payload.query.strip() or not payload.text.strip():
+        raise HTTPException(status_code=400, detail="query and text must not be empty")
+    from app import rerank as _rerank
+
+    scores = _rerank.rerank(payload.query, [payload.text], force=True)
+    score = scores[0] if scores else None
+    reason = enrich.explain_match(payload.query, payload.text)
+    if score is None and not reason:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "optional_features_unavailable",
+                "message": "Neither the reranker (DOC_RERANK) nor a local LLM "
+                           "(Ollama) is available to explain this match.",
+            },
+        )
+    return {
+        "label": enrich.match_label(score),
+        "rerank_score": score,  # kept for debugging — do not show as a %
+        "reason": reason or None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +636,7 @@ def chat(payload: ChatRequest):
         )
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
+    _require_doc_embedder()  # /chat retrieves document context via the index
 
     client = state["qdrant_client"]
     index = state["index"]
@@ -631,6 +734,11 @@ def memory_export():
 def memory_import(bundle: dict):
     """Re-embed and upsert a bundle produced by /memory/export. Idempotent:
     records already present (deterministic ids / content hash) are skipped."""
+    # Facts/history remain importable when the optional document embedder is
+    # unavailable. Only a valid bundle that actually carries document chunks
+    # needs the document index.
+    if transfer.bundle_has_documents(bundle):
+        _require_doc_embedder()
     try:
         return transfer.import_bundle(
             state["qdrant_client"], state["embed_model"], state["index"], bundle

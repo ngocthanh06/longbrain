@@ -19,6 +19,38 @@ EMBED_MODEL = os.getenv(
 )
 
 # ---------------------------------------------------------------------------
+# Document embedder (SEARCH_SPEC constraint 1) — a SEPARATE vector space for
+# the documents collection only. Unset (default) = the global embedder above,
+# so existing deployments change nothing. Memories/chat-history always use
+# the global embedder: their dedup/graph thresholds are calibrated to it.
+# Providers: those of EMBED_PROVIDER plus "huggingface" (sentence-transformers
+# in-process — needed because fastembed has no BAAI/bge-m3).
+# ---------------------------------------------------------------------------
+DOC_EMBED_PROVIDER = os.getenv("DOC_EMBED_PROVIDER", "").lower()
+DOC_EMBED_MODEL = os.getenv("DOC_EMBED_MODEL", "")
+
+# Cross-encoder rerank pass on the document search path (SEARCH_SPEC
+# Sprint 2). Core feature behind a kill switch; default OFF until the
+# latency measurement on the deployment machine proves the <500ms budget
+# (cross-encoders on container CPU can cost seconds). Lazy-loaded; any load
+# failure degrades to plain retrieval order.
+DOC_RERANK = os.getenv("DOC_RERANK", "false").lower() == "true"
+DOC_RERANK_MODEL = os.getenv("DOC_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+# How many retrieval candidates feed the reranker before cutting to top_k.
+DOC_RERANK_CANDIDATES = int(os.getenv("DOC_RERANK_CANDIDATES", "20"))
+
+# ---------------------------------------------------------------------------
+# Optional tier (SEARCH_SPEC Sprints 3-4): document enrichment + on-demand
+# match explanation via a LOCAL LLM only. Deliberately a separate knob from
+# LLM_PROVIDER (which drives distillation/consolidation) so turning document
+# features on/off can never silently change fact-extraction behavior.
+# Everything here degrades gracefully when Ollama is not running.
+# ---------------------------------------------------------------------------
+DOC_LLM_PROVIDER = os.getenv("DOC_LLM_PROVIDER", "ollama").lower()
+DOC_LLM_MODEL = os.getenv("DOC_LLM_MODEL", "qwen3:latest")
+DOC_ENRICH = os.getenv("DOC_ENRICH", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
 # LLM provider — stateless, safe to switch at any time. Only used for the
 # optional /chat endpoint and server-side consolidation. With "none" the
 # service still runs fully; consolidation is then driven by the Hermes-side

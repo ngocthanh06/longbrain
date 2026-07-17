@@ -151,10 +151,15 @@ to dense-only. Kill switch: `HYBRID_BM25=false`.
 
 ## 4. Qdrant schema
 
-All vector collections use Cosine distance; dimension follows the embedding
-model (default 384 — `paraphrase-multilingual-MiniLM-L12-v2`). Each data
-collection additionally carries a named sparse vector `bm25` (IDF modifier)
-for the hybrid exact-token channel (§3c); the dense vector stays unnamed.
+All vector collections use Cosine distance. The MEMORY collections
+(chat history + memories) follow the global embedding model (default 384 —
+`paraphrase-multilingual-MiniLM-L12-v2`); the DOCUMENTS collection may live
+in its own vector space via `DOC_EMBED_*` (default `BAAI/bge-m3`, 1024d —
+see [SEARCH_SPEC](SEARCH_SPEC.md): cross-lingual doc search cleared the
+1.3× bar, while the memory thresholds calibrated on MiniLM stay untouched).
+Each data collection additionally carries a named sparse vector `bm25`
+(IDF modifier) for the hybrid exact-token channel (§3c); the dense vector
+stays unnamed.
 
 ### `longbrain_chat_history` (L2)
 ```jsonc
@@ -200,22 +205,34 @@ and re-run safely.
 
 ### `longbrain_meta` (guard)
 A single fixed point, vector dim=1: `{schema_version, embed_provider,
-embed_model, embed_dim, last_written_at}`. At startup the service compares the
-current config against the meta — **an embedding mismatch refuses to boot**
-(protects the vector space).
+embed_model, embed_dim, doc_embed_provider, doc_embed_model, doc_embed_dim,
+last_written_at}`. At startup the service compares the current config against
+the meta — **an embedding mismatch refuses to boot** (protects both vector
+spaces; the `doc_*` fields are null-safe for data written before they
+existed). A doc embedder that is configured but cannot LOAD is different
+from a mismatch: the service still boots, memory search works, and document
+endpoints return a typed 503 `doc_embedder_unavailable` (`/health` exposes
+`doc_embedder_ready`).
 
 ## 5. Providers (configured via .env)
 
-| | Embedding | LLM |
-|---|---|---|
-| Role | Determines the vector space — **pick once** | Only used for consolidation + `/chat` — **swap freely** |
-| Default | `fastembed` (local ONNX, baked into the image, no key, no GPU) | `none` (the agent's own model distills via MCP) |
-| Options | `ollama`, `openai`, `nvidia` | `anthropic`, `openai`, `nvidia`, `gemini`, `ollama` |
-| How to change | Backup → `docker compose down -v` → edit .env → re-ingest (the meta guard blocks silent changes) | Edit `.env` + API key → `docker compose up -d` |
+| | Embedding (memory) | Doc embedding | LLM |
+|---|---|---|---|
+| Role | Vector space of facts/history — **pick once** | Vector space of documents only — **pick once** | Only used for consolidation + `/chat` — **swap freely** |
+| Default | `fastembed` (local ONNX, baked into the image, no key, no GPU) | `huggingface` + `BAAI/bge-m3` (local, downloads ~2.3GB to the `/data` volume on first use) | `none` (the agent's own model distills via MCP) |
+| Options | `ollama`, `openai`, `nvidia` | those + `huggingface` (empty `DOC_EMBED_MODEL` = share the memory embedder) | `anthropic`, `openai`, `nvidia`, `gemini`, `ollama` |
+| How to change | Backup → `docker compose down -v` → edit .env → re-ingest (the meta guard blocks silent changes) | `scripts/migrate_doc_embed.py` (backs up, recreates + re-embeds ONLY the documents collection) | Edit `.env` + API key → `docker compose up -d` |
 
-`fastembed` is **hard-pinned** in requirements.txt — this library has changed
-its pooling behavior between minor versions before; without the pin, vectors
-between two image builds can silently diverge.
+A fourth, optional knob `DOC_LLM_*` (default Ollama + qwen3) powers the
+document Optional tier — ai-summary enrichment chunks and `/query/explain` —
+and is deliberately separate from `LLM_PROVIDER` so document features can
+never silently change distillation behavior. No Ollama = those features are
+simply absent; Core search is unaffected.
+
+`fastembed` and `sentence-transformers` are **hard-pinned** in
+requirements.txt — fastembed has changed its pooling behavior between minor
+versions before, and any drift in either library would silently shift a
+vector space between two image builds.
 
 ## 6. API surface
 

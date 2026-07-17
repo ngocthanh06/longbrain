@@ -31,6 +31,16 @@ class InvalidBundle(ValueError):
     pass
 
 
+def bundle_has_documents(bundle: object) -> bool:
+    """Whether a valid transfer bundle needs the document import path."""
+    return bool(
+        isinstance(bundle, dict)
+        and bundle.get("format") == FORMAT
+        and bundle.get("version") == VERSION
+        and bundle.get("documents")
+    )
+
+
 def _scroll_all(client: QdrantClient, collection: str, flt=None) -> list:
     points, offset = [], None
     while True:

@@ -1,0 +1,10 @@
+# Optional doc-search stack (SEARCH_SPEC Sprint 1) — installed only when the
+# image is built with INSTALL_DOC_SEARCH=true (scripts/enable_doc_search.sh).
+# Memory-only deployments never carry this (~6GB: torch + sentence-transformers).
+#
+# sentence-transformers is pinned EXACTLY like fastembed and for the same
+# reason — pooling/normalization drift between versions would silently shift
+# the documents vector space. 5.1.2 is the version the Sprint 0 benchmark
+# (scripts/benchmark_doc_search.py) produced its accepted numbers with.
+llama-index-embeddings-huggingface>=0.4,<0.6
+sentence-transformers==5.1.2

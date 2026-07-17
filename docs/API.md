@@ -36,6 +36,11 @@ curl localhost:8800/health
   "embed_provider": "fastembed",
   "embed_model": "paraphrase-multilingual-MiniLM-L12-v2",
   "embed_dim": 384,
+  "doc_embed_model": "BAAI/bge-m3",
+  "doc_embed_dim": 1024,
+  "doc_embedder_ready": true,
+  "doc_embedder_error": null,
+  "doc_rerank": false,
   "llm_provider": "none",
   "llm_model": null,
   "schema_version": 2,
@@ -82,7 +87,11 @@ curl -X POST localhost:8800/ingest/file \
 #### `POST /query`
 
 Semantic search over ingested documents. `project` is a **hard filter**
-(documents never leak across projects).
+(documents never leak across projects). With `DOC_RERANK=true` the top
+`DOC_RERANK_CANDIDATES` retrieval hits are re-ordered by a cross-encoder
+before the `top_k` cut. Returns `503 doc_embedder_unavailable` when the
+document embedder is configured but could not load — clearly distinct from
+an empty `results` (no matching documents).
 
 ```bash
 curl -X POST localhost:8800/query -H 'Content-Type: application/json' \
@@ -91,6 +100,28 @@ curl -X POST localhost:8800/query -H 'Content-Type: application/json' \
 
 ```json
 {"results": ["...chunk text...", "..."]}
+```
+
+#### `POST /query/explain`
+
+On-demand "why does this result match" (never part of the search hot path).
+`label` is a coarse band over the reranker score (`Khớp cao` / `Có thể liên
+quan` / `Ít liên quan` / `unknown`) — the reranker loads lazily for this
+endpoint even when `DOC_RERANK=false` (the flag only gates the search hot
+path; one pair ≈ 0.5 s CPU is fine on demand). `reason` is a short
+Vietnamese explanation from the local LLM (`DOC_LLM_*`), `null` when Ollama
+is not running. `503 optional_features_unavailable` when neither is
+available.
+`rerank_score` is a raw logit for debugging — do not present it as a
+confidence percentage.
+
+```bash
+curl -X POST localhost:8800/query/explain -H 'Content-Type: application/json' \
+  -d '{"query": "tài liệu về trả về message", "text": "...chunk text..."}'
+```
+
+```json
+{"label": "Khớp cao", "rerank_score": 2.31, "reason": "Tài liệu mô tả..."}
 ```
 
 ### Memory lifecycle (L2 + L3)
@@ -402,4 +433,6 @@ requested explicitly.
 | `404` | fact/session endpoints | No record with that id. |
 | `409` | `POST /memory/consolidate` (foreground) | Consolidation could not run (e.g. no LLM configured) — use `background: true` or the MCP tool flow instead. |
 | `503` | `POST /chat` | `LLM_PROVIDER=none` — /chat is disabled by design; agents should use `/memory/*` + `/query`. |
+| `503 doc_embedder_unavailable` | `/query`, `/ingest/*`, `/chat`, `/memory/import` | The separate document embedder (`DOC_EMBED_*`) is configured but could not load/download. Memory endpoints keep working; check `doc_embedder_error` in `GET /health`. Clients must show this as "document search unavailable", NOT as "no matching documents". |
+| `503 optional_features_unavailable` | `POST /query/explain` | Neither the reranker (`DOC_RERANK`) nor a local LLM (Ollama) is available. |
 | connection refused | everything | Service not running — `docker compose up -d`, then check `GET /health`. |

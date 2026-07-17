@@ -22,6 +22,10 @@ services:
       args:
         EMBED_PROVIDER: "${EMBED_PROVIDER:-fastembed}"
         EMBED_MODEL: "${EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+        # Doc-search stack (torch + sentence-transformers) is opt-in: memory-
+        # only installs keep the lean image. scripts/enable_doc_search.sh
+        # flips this together with DOC_EMBED_* and rebuilds.
+        INSTALL_DOC_SEARCH: "${INSTALL_DOC_SEARCH:-false}"
     # Explicit tag — otherwise compose names the built image after the folder
     # (hermes-agent-llamaindex). The compose PROJECT name must stay untouched:
     # volumes are prefixed with it, renaming it would orphan the data.
@@ -34,6 +38,18 @@ services:
       QDRANT_URL: "http://qdrant:6333"
       EMBED_PROVIDER: "${EMBED_PROVIDER:-fastembed}"
       EMBED_MODEL: "${EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+      # Separate documents embedder (docs/SEARCH_SPEC.md). Empty = documents
+      # share EMBED_MODEL. Changing it on existing data requires
+      # scripts/migrate_doc_embed.py.
+      DOC_EMBED_PROVIDER: "${DOC_EMBED_PROVIDER:-}"
+      DOC_EMBED_MODEL: "${DOC_EMBED_MODEL:-}"
+      DOC_RERANK: "${DOC_RERANK:-false}"
+      DOC_RERANK_MODEL: "${DOC_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
+      DOC_RERANK_CANDIDATES: "${DOC_RERANK_CANDIDATES:-20}"
+      # Optional tier (local LLM only; degrades gracefully without Ollama)
+      DOC_LLM_PROVIDER: "${DOC_LLM_PROVIDER:-ollama}"
+      DOC_LLM_MODEL: "${DOC_LLM_MODEL:-qwen3:latest}"
+      DOC_ENRICH: "${DOC_ENRICH:-true}"
       LLM_PROVIDER: "${LLM_PROVIDER:-none}"
       LLM_MODEL: "${LLM_MODEL:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"

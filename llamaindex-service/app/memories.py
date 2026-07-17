@@ -1092,9 +1092,17 @@ def recall(
     )
 
     routing = route_query(query)
+    # The docs channel searches the documents collection, which may live in
+    # its own vector space (DOC_EMBED_*, SEARCH_SPEC constraint 1) — use the
+    # doc embedder from the runtime, not the memory embedder. Absent key
+    # (tests) falls back to embed_model; an explicit None (doc embedder
+    # failed to load) skips the channel — recall stays best-effort.
+    from app.runtime import state as _runtime_state
+
+    doc_embed = _runtime_state.get("doc_embed_model", embed_model)
     docs = (
-        documents.search_chunks(client, embed_model, query, project or None)
-        if routing["docs"]
+        documents.search_chunks(client, doc_embed, query, project or None)
+        if routing["docs"] and doc_embed is not None
         else []
     )
 

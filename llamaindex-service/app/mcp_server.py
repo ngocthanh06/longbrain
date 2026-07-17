@@ -284,21 +284,39 @@ def _register_tools() -> None:
         """Search the document knowledge base (ingested files/notes) for
         information relevant to a query. Pass a Hermes project slug to search
         only that project's documents; leave empty to search everything."""
+        if state.get("index") is None:
+            # SEARCH_SPEC constraint 3: loud, typed unavailability — clearly
+            # distinct from "no matching documents".
+            return ("Document search unavailable (doc_embedder_unavailable): "
+                    + (state.get("doc_embed_error") or "unknown error"))
         filters = None
         if project:
             from llama_index.core.vector_stores.types import MetadataFilter, MetadataFilters
 
             filters = MetadataFilters(filters=[MetadataFilter(key="project_id", value=project)])
-        retriever = state["index"].as_retriever(similarity_top_k=top_k, filters=filters)
+        from app import rerank as _rerank
+
+        fetch_k = max(top_k, config.DOC_RERANK_CANDIDATES) \
+            if config.DOC_RERANK else top_k
+        retriever = state["index"].as_retriever(similarity_top_k=fetch_k, filters=filters)
         nodes = retriever.retrieve(query)
         if not nodes:
             return "No relevant documents found in the knowledge base."
-        return "\n\n---\n\n".join(node.node.get_content() for node in nodes)
+        contents = [node.node.get_content() for node in nodes]
+        scores = _rerank.rerank(query, contents)
+        if scores is not None:
+            contents = [c for _, c in
+                        sorted(zip(scores, contents), key=lambda p: -p[0])]
+        return "\n\n---\n\n".join(contents[:top_k])
 
     @mcp.tool()
     def add_to_knowledge_base(text: str, source: str = "", project: str = "") -> str:
         """Add a piece of text to the document knowledge base for future
         retrieval, optionally scoped to a Hermes project slug."""
+        if state.get("index") is None:
+            return ("Cannot ingest: document embedder unavailable "
+                    "(doc_embedder_unavailable): "
+                    + (state.get("doc_embed_error") or "unknown error"))
         total = documents.ingest_text(
             state["index"], state["qdrant_client"], text,
             {"source": source} if source else {},
