@@ -5,7 +5,9 @@ be re-embedded from source when the embedding model changes.
 """
 
 import hashlib
+import math
 import shutil
+import time
 from pathlib import Path
 
 from llama_index.core import Document, SimpleDirectoryReader, VectorStoreIndex
@@ -26,6 +28,7 @@ EXCLUDED_METADATA_KEYS = [
     "file_path", "file_name", "file_type", "file_size",
     "creation_date", "last_modified_date", "last_accessed_date",
     "enriched",  # bookkeeping flag on AI-summary chunks (app/enrich.py)
+    "ingested_at",  # bookkeeping timestamp for recency decay in search_chunks
 ]
 
 
@@ -137,12 +140,99 @@ def ingest_text(
             **(metadata or {}),
             "user_id": config.USER_ID,
             "project_id": project_id or config.DEFAULT_PROJECT,
+            "ingested_at": time.time(),
         },
     )
     _hide_admin_metadata(document)
     index.insert(document)
     _backfill_sparse(qdrant_client, [document.doc_id])
     return point_count(qdrant_client)
+
+
+def _supersede_previous_versions(
+    qdrant_client: QdrantClient,
+    project_id: str,
+    document_key: str,
+    new_stored_path: str,
+) -> int:
+    """Mark earlier versions of the same logical document as superseded so
+    search excludes them by default (mirrors memories.py's superseded_by
+    pattern instead of deleting anything).
+
+    Scope is deliberately narrow: only chunks that themselves carry a
+    `stored_path` (i.e. produced by ingest_file(), never by ingest_text())
+    are eligible. Enrichment summary chunks (`enriched: true`) and manually
+    added text (add_to_knowledge_base) have no `stored_path` and no version
+    concept, so they are excluded by construction and never touched here."""
+    if not document_key:
+        return 0
+    must = [
+        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
+        qmodels.FieldCondition(key="document_key", match=qmodels.MatchValue(value=document_key)),
+    ]
+    must_not = [
+        qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="stored_path")),
+        qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=new_stored_path)),
+    ]
+    stale_ids: list = []
+    offset = None
+    while True:
+        points, offset = qdrant_client.scroll(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            scroll_filter=qmodels.Filter(must=must, must_not=must_not),
+            limit=128, offset=offset, with_payload=False, with_vectors=False,
+        )
+        stale_ids.extend(p.id for p in points)
+        if offset is None:
+            break
+    if stale_ids:
+        qdrant_client.set_payload(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            payload={"superseded_by": new_stored_path},
+            points=stale_ids,
+        )
+    return len(stale_ids)
+
+
+def tag_existing_version(
+    qdrant_client: QdrantClient,
+    project_id: str,
+    stored_path: str,
+    document_key: str,
+) -> int:
+    """Backfill the stable key onto legacy chunks for the same content.
+
+    The first post-fix watcher pass may encounter a content-addressed chunk
+    created before ``document_key`` existed. Tagging it lets the normal
+    supersession pass compare it safely with the new version without using
+    the ambiguous basename/source field.
+    """
+    if not (project_id and stored_path and document_key):
+        return 0
+    flt = qmodels.Filter(must=[
+        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
+        qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)),
+    ])
+    points, offset = [], None
+    while True:
+        batch, offset = qdrant_client.scroll(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            scroll_filter=flt,
+            limit=128,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        points.extend(p.id for p in batch)
+        if offset is None:
+            break
+    if points:
+        qdrant_client.set_payload(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            payload={"document_key": document_key},
+            points=points,
+        )
+    return len(points)
 
 
 def ingest_file(
@@ -161,12 +251,29 @@ def ingest_file(
                 **(metadata or {}),
                 "user_id": config.USER_ID,
                 "project_id": project_id or config.DEFAULT_PROJECT,
+                "ingested_at": time.time(),
             }
         )
         _hide_admin_metadata(document)
         index.insert(document)
     _backfill_sparse(qdrant_client, [d.doc_id for d in documents])
+    document_key = (metadata or {}).get("document_key")
+    stored_path = (metadata or {}).get("stored_path")
+    if document_key and stored_path:
+        tag_existing_version(
+            qdrant_client,
+            project_id or config.DEFAULT_PROJECT,
+            stored_path,
+            document_key,
+        )
+        _supersede_previous_versions(
+            qdrant_client, project_id or config.DEFAULT_PROJECT, document_key, stored_path
+        )
     return point_count(qdrant_client)
+
+
+def _decay(age_seconds: float, half_life_days: float) -> float:
+    return math.pow(0.5, age_seconds / (half_life_days * 86400.0))
 
 
 def search_chunks(
@@ -180,16 +287,25 @@ def search_chunks(
     """Lightweight L4 lookup for the recall router: nearest document chunks,
     hard-filtered to the project (documents are project-scoped by design).
     Reads the chunk text out of the serialized `_node_content` directly so
-    recall() doesn't need the LlamaIndex index object."""
+    recall() doesn't need the LlamaIndex index object.
+
+    Results are ranked by similarity decayed on `ingested_at` age (see
+    config.DOC_HALF_LIFE_DAYS) so a stale chunk doesn't keep outranking a
+    newer one at the same similarity; chunks ingested before this field
+    existed fall back to age 0 (no penalty)."""
     import json as _json
 
     vector = embed_model.get_text_embedding(query)
-    must = []
+    must = [qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by"))]
     if project:
         must.append(
             qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project))
         )
-    flt = qmodels.Filter(must=must) if must else None
+    flt = qmodels.Filter(must=must)
+    payload_fields = [
+        "_node_content", "source", "project_id", "document_key",
+        "stored_path", "ingested_at",
+    ]
     try:
         dense_hits = client.search(
             collection_name=config.DOCUMENTS_COLLECTION,
@@ -197,14 +313,15 @@ def search_chunks(
             query_filter=flt,
             limit=top_k,
             score_threshold=min_score,
-            with_payload=["_node_content", "source", "project_id"],
+            with_payload=payload_fields,
         )
     except Exception:
         return []  # collection missing/empty — recall stays best-effort
     sparse_hits = hybrid.search(
         client, config.DOCUMENTS_COLLECTION, query, flt, top_k,
-        with_payload=["_node_content", "source", "project_id"],
+        with_payload=payload_fields,
     )
+    now = time.time()
     results = []
     for e in hybrid.fuse(dense_hits, sparse_hits):
         if e["similarity"] < min_score:
@@ -216,10 +333,25 @@ def search_chunks(
             text = _json.loads(raw).get("text", "")
         except (ValueError, TypeError):
             continue
+        age = max(now - (e["payload"].get("ingested_at") or now), 0.0)
+        decay_factor = _decay(age, config.DOC_HALF_LIFE_DAYS)
         results.append({
             "source": e["payload"].get("source") or "",
             "project_id": e["payload"].get("project_id") or "",
+            "document_key": e["payload"].get("document_key") or "",
+            "stored_path": e["payload"].get("stored_path") or "",
+            "point_id": str(e["id"]),
             "text": text,
-            "score": e["similarity"],
+            "score": e["similarity"] * decay_factor,
+            # Traceability (why this chunk was surfaced/ranked here):
+            # decomposed factors behind `score`, not shown in context_block.
+            "trace": {
+                "similarity": e["similarity"],
+                "decay_factor": decay_factor,
+                "point_id": str(e["id"]),
+                "document_key": e["payload"].get("document_key") or "",
+                "stored_path": e["payload"].get("stored_path") or "",
+            },
         })
+    results.sort(key=lambda r: r["score"], reverse=True)
     return results[:top_k]

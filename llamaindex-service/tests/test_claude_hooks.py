@@ -8,6 +8,7 @@ import subprocess
 
 import pytest
 
+import admission_gate
 import post_llm_call
 import project_catalog
 import stop
@@ -265,8 +266,20 @@ def test_env_int_malformed_value_falls_back(monkeypatch):
 # user_prompt_submit: wrapper line language must mirror app.memories.is_vietnamese
 # ---------------------------------------------------------------------------
 def test_wrapper_language_regex_matches_common_vietnamese():
-    vn_re = user_prompt_submit._VN_CHARS_RE
+    # The regex now lives in the shared admission_gate module (see
+    # hooks/admission_gate.py) instead of being copied per hook.
+    vn_re = admission_gate._VN_CHARS_RE
     assert vn_re.search("chào bạn")  # plain-vowel tones (à/ạ) must be caught
     assert vn_re.search("cảm ơn bạn nhiều")
     assert vn_re.search("sửa lỗi này giúp tôi")
     assert not vn_re.search("what does this function do?")
+
+
+def test_cap_context_never_cuts_an_item():
+    context = "[Long-term memories]\n- first item\n- second item"
+    budget = len("[Long-term memories]\n- first item")
+    assert admission_gate.cap_context(context, budget) == "[Long-term memories]\n- first item"
+
+
+def test_cap_context_drops_oversized_first_item():
+    assert admission_gate.cap_context("[H]\n- oversized", 5) == ""

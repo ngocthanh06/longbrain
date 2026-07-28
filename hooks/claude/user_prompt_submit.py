@@ -11,29 +11,20 @@ timeout. Any failure degrades to no injection — never blocks the prompt.
 """
 
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import env_get, env_int, post_json, read_payload, resolve_project  # noqa: E402
+from common import (  # noqa: E402
+    cap_context,
+    MIN_PROMPT_CHARS,
+    context_prefix,
+    env_get,
+    post_json,
+    read_payload,
+    resolve_project,
+)
 
 TIMEOUT = float(env_get("LONGBRAIN_MEMORY_RECALL_TIMEOUT", "3"))
-MAX_CONTEXT_CHARS = env_int("LONGBRAIN_MEMORY_MAX_CONTEXT", 6000)
-# Prompts shorter than this ("ok", "tiếp tục", "continue") carry no searchable
-# meaning — recall would only match noise, and every injected block costs the
-# user's subscription tokens. The turn is still WRITTEN to memory by the Stop
-# hook; only the lookup is skipped.
-MIN_PROMPT_CHARS = env_int("LONGBRAIN_RECALL_MIN_PROMPT_CHARS", 15)
-
-# Mirrors app.memories.is_vietnamese — this wrapper line is the one piece of
-# injected text the hook itself controls (context_block's own headers are
-# matched server-side), so it should follow the query's language too instead
-# of guaranteeing a dose of English on every single Vietnamese turn.
-_VN_CHARS_RE = re.compile(
-    r"[ăâàáảãạằắẳẵặầấẩẫậêèéẻẽẹềếểễệìíỉĩịôơòóỏõọồốổỗộờớởỡợ"
-    r"ưùúủũụừứửữựỳýỷỹỵđ]",
-    re.IGNORECASE,
-)
 
 
 def main():
@@ -55,9 +46,7 @@ def main():
     if context:
         # Keep injection bounded: it costs the user's subscription tokens
         # on every turn.
-        prefix = "Bộ nhớ dài hạn (tự động gọi lại):" if _VN_CHARS_RE.search(query) \
-            else "Long-term memory (auto-recalled):"
-        print(prefix + "\n" + context[:MAX_CONTEXT_CHARS])
+        print(context_prefix(query) + "\n" + cap_context(context))
 
 
 if __name__ == "__main__":

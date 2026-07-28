@@ -3,14 +3,15 @@
 
 import json
 import os
-import re
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lifecycle_common import (  # noqa: E402
+    cap_context,
+    MIN_PROMPT_CHARS,
+    context_prefix,
     env_get,
-    env_int,
     post_json,
     read_payload,
     resolve_project,
@@ -19,18 +20,6 @@ from lifecycle_common import (  # noqa: E402
 )
 
 TIMEOUT = float(env_get("LONGBRAIN_MEMORY_RECALL_TIMEOUT", "3"))
-MAX_CONTEXT_CHARS = env_int("LONGBRAIN_MEMORY_MAX_CONTEXT", 6000)
-MIN_PROMPT_CHARS = env_int("LONGBRAIN_RECALL_MIN_PROMPT_CHARS", 15)
-
-# Mirrors app.memories.is_vietnamese — this wrapper line is the one piece of
-# injected text the hook itself controls (context_block's own headers are
-# matched server-side), so it should follow the prompt's language too instead
-# of guaranteeing a dose of English on every single Vietnamese turn.
-_VN_CHARS_RE = re.compile(
-    r"[ăâàáảãạằắẳẵặầấẩẫậêèéẻẽẹềếểễệìíỉĩịôơòóỏõọồốổỗộờớởỡợ"
-    r"ưùúủũụừứửữựỳýỷỹỵđ]",
-    re.IGNORECASE,
-)
 
 
 def main() -> None:
@@ -57,12 +46,10 @@ def main() -> None:
     )
     if not context:
         return
-    prefix = "Bộ nhớ dài hạn (tự động gọi lại):" if _VN_CHARS_RE.search(prompt) \
-        else "Long-term memory (auto-recalled):"
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": prefix + "\n" + context[:MAX_CONTEXT_CHARS],
+            "additionalContext": context_prefix(prompt) + "\n" + cap_context(context),
         }
     }))
 

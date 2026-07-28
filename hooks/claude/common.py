@@ -35,6 +35,11 @@ DEBUG_LOG = os.path.join(
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from post_llm_call import resolve_project_with_source  # noqa: E402
 from project_catalog import record_project_folder  # noqa: E402
+from admission_gate import (  # noqa: E402,F401
+    cap_context,
+    MIN_PROMPT_CHARS,
+    context_prefix,
+)
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # Codex Desktop invents a scratch cwd per ad-hoc chat (no real workspace

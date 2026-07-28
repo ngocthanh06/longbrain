@@ -206,7 +206,9 @@ def ensure_all(
             )
     _ensure_indexes(
         client, config.DOCUMENTS_COLLECTION,
-        {"project_id": keyword, "user_id": keyword, "stored_path": keyword},
+        {"project_id": keyword, "user_id": keyword, "stored_path": keyword,
+         "source": keyword, "document_key": keyword, "superseded_by": keyword,
+         "ingested_at": ts},
     )
 
     if config.META_COLLECTION not in _existing_collections(client):

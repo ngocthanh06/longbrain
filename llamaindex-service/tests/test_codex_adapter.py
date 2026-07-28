@@ -5,6 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import admission_gate
 import configure_codex
 
 
@@ -275,7 +276,9 @@ def test_lifecycle_recall_saves_prompt_and_injects_context(monkeypatch, capsys):
 
 
 def test_wrapper_language_regex_matches_common_vietnamese():
-    vn_re = user_prompt_submit._VN_CHARS_RE
+    # The regex now lives in the shared admission_gate module (see
+    # hooks/admission_gate.py) instead of being copied per hook.
+    vn_re = admission_gate._VN_CHARS_RE
     assert vn_re.search("chào bạn")  # plain-vowel tones (à/ạ) must be caught
     assert vn_re.search("cảm ơn bạn nhiều")
     assert not vn_re.search("what does this function do?")

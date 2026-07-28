@@ -122,7 +122,7 @@ def service_reachable() -> bool:
         return False
 
 
-def ingest_file(path: Path, project_id: str) -> bool:
+def ingest_file(path: Path, project_id: str, document_key: str) -> bool:
     """POST one file to /ingest/file as multipart/form-data (stdlib only —
     no `requests` dependency on the host). Returns True on a 2xx response."""
     boundary = uuid.uuid4().hex
@@ -136,7 +136,10 @@ def ingest_file(path: Path, project_id: str) -> bool:
 
     body = bytearray()
     body += field("project_id", project_id)
-    body += field("metadata", json.dumps({"source": path.name}))
+    body += field(
+        "metadata",
+        json.dumps({"source": path.name, "document_key": document_key}),
+    )
     body += (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
         f'filename="{path.name}"\r\nContent-Type: {content_type}\r\n\r\n'
@@ -169,9 +172,17 @@ def main() -> int:
         return 0
 
     state = load_state()
+    force = "--force" in sys.argv
+    requested_projects = {
+        arg.split("=", 1)[1]
+        for arg in sys.argv
+        if arg.startswith("--project=") and "=" in arg
+    }
     sent, skipped, failed = 0, 0, 0
 
     for slug, folder in projects:
+        if requested_projects and slug not in requested_projects:
+            continue
         docs_dir = Path(folder).expanduser() / "docs"
         if not docs_dir.is_dir():
             continue
@@ -184,10 +195,15 @@ def main() -> int:
             except OSError:
                 continue
             fingerprint = {"mtime": st.st_mtime, "size": st.st_size}
-            if state.get(key) == fingerprint:
+            if not force and state.get(key) == fingerprint:
                 skipped += 1
                 continue
-            if ingest_file(path, slug):
+            try:
+                document_key = path.relative_to(docs_dir).as_posix()
+            except ValueError:
+                # The path was removed or moved between rglob() and here.
+                continue
+            if ingest_file(path, slug, document_key):
                 state[key] = fingerprint
                 sent += 1
                 log(f"ingested {path} -> project '{slug}'")

@@ -1308,3 +1308,36 @@ def test_invalid_project_scope_fails_closed_for_facts_and_history(client, bad_sc
         memory_store.search_history(
             client, embed, "anything", project="proj-a", project_scope=bad_scope
         )
+
+
+# --- _budget_lines: item-level context budgeting ---------------------------
+
+def test_budget_lines_drops_whole_items_never_cuts_mid_line():
+    sections = [("[H1]", ["- aaaaa", "- bbbbb", "- ccccc"])]
+    # "[H1]" (5) + "- aaaaa" (8) = 13 fits in 14; adding "- bbbbb" (8) would
+    # push total to 21 > 14, so it (and "- ccccc") are dropped whole.
+    lines = memories._budget_lines(sections, budget=14)
+    assert lines == ["[H1]", "- aaaaa"]
+
+
+def test_budget_lines_omits_header_when_nothing_fits():
+    sections = [("[H1]", ["- one"])]
+    lines = memories._budget_lines(sections, budget=3)
+    assert lines == []
+
+
+def test_budget_lines_moves_to_next_section_when_current_is_exhausted():
+    sections = [
+        ("[H1]", ["- item-one"]),
+        ("[H2]", ["- x"]),
+    ]
+    # H1's header+item needs 5+11=16 chars — doesn't fit in 9. H2's header+item
+    # needs 5+4=9 — fits exactly, so budgeting moves on instead of giving up.
+    lines = memories._budget_lines(sections, budget=9)
+    assert lines == ["[H2]", "- x"]
+
+
+def test_budget_lines_includes_everything_when_budget_is_generous():
+    sections = [("[H1]", ["- a", "- b"]), ("[H2]", ["- c"])]
+    lines = memories._budget_lines(sections, budget=10_000)
+    assert lines == ["[H1]", "- a", "- b", "[H2]", "- c"]

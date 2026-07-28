@@ -136,7 +136,11 @@
     transition: border-color .15s, opacity .2s, transform .1s;
   }
   .chip:active { transform: scale(.96); }
-  .chip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; position: relative; }
+  .chip .dot.color-picker-modified::after {
+    content: ""; position: absolute; inset: -3px; border-radius: 50%;
+    border: 1.5px solid var(--accent); opacity: .7;
+  }
   .chip .n { color: var(--text-muted); font-size: 11px; }
   .chip .edit { color: var(--text-muted); font-size: 11px; padding: 0 2px; visibility: hidden; }
   .chip:hover .edit { visibility: visible; }
@@ -150,6 +154,13 @@
     position: absolute; top: 0; left: 0; right: 0; bottom: 0;
     width: 100%; height: 100%; display: block; cursor: grab;
     background: radial-gradient(ellipse 90% 70% at 50% 32%, var(--glow), transparent 65%);
+  }
+  /* Background starfield layer — only repainted on pan/zoom/resize, not on
+     every frame. Sits behind the dynamic layer so it never blocks interaction. */
+  #canvas_bg {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%; height: 100%; display: block;
+    pointer-events: none;  /* clicks pass through to #canvas above */
   }
   #canvas.dragging { cursor: grabbing; }
   #empty {
@@ -662,10 +673,10 @@
     <label class="filter-block" title="Keep dense graphs readable and responsive; List view still shows every matching memory">
       <div class="filter-label"><span>Canvas density</span><span id="graphLimitNote"></span></div>
       <select id="graphLimit">
-        <option value="150" selected>Balanced · 150</option>
-        <option value="300">Detailed · 300</option>
-        <option value="600">Dense · 600</option>
-        <option value="0">Everything</option>
+              <option value="250">Fast · 250</option>
+                      <option value="500" selected>Balanced · 500</option>
+                      <option value="1000">Full · 1,000</option>
+                      <option value="0">No limit</option>
       </select>
     </label>
     <label class="filter-block" title="Increase the distance between project hubs; you can also drag any hub directly">
@@ -702,6 +713,7 @@
 </header>
 
 <main id="stage">
+  <canvas id="canvas_bg"></canvas>
   <canvas id="canvas"></canvas>
   <div id="loading"><strong>Loading memory map…</strong><span>Preparing projects and links.</span><button class="btn" id="retryLoad" style="display:none">Try again</button></div>
   <div id="empty">
@@ -794,6 +806,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const canvas = $("canvas"), ctx = canvas.getContext("2d");
+const canvasBg = $("canvas_bg"), ctxBg = canvasBg.getContext("2d");
 const TYPES = ["fact", "preference", "decision", "task"];
 const TYPE_GLYPH = { fact: "●", preference: "☄", decision: "✦", task: "◌" };
 // Shape identifies memory type; a stable categorical color identifies the
@@ -805,6 +818,19 @@ const PROJECT_PALETTE = [
   "#e8c581", "#b88aff", "#91ae7d", "#d9906f", "#75a4bf",
   "#c9b06f", "#c780a2", "#8f8bd6", "#d5a85b", "#7aa99b",
 ];
+
+// Custom project colors — user can override any project's color.
+// Persisted to localStorage. Default (no override) = pallete hash.
+let customColors = new Map();
+try {
+  const saved = JSON.parse(localStorage.getItem("hermes-atlas-custom-colors") || "{}");
+  customColors = new Map(Object.entries(saved));
+} catch (_) { customColors = new Map(); }
+function saveCustomColors() {
+  try {
+    localStorage.setItem("hermes-atlas-custom-colors", JSON.stringify(Object.fromEntries(customColors)));
+  } catch (_) {}
+}
 
 let nodes = [], edges = [], adj = new Map(), edgesByNode = new Map(), nodeById = new Map();
 let multiSel = new Set();   // ids picked with shift+click for bulk actions
@@ -831,12 +857,14 @@ let css = {};
 let viewW = 0, viewH = 0;
 let filteredNodes = [], visNodes = [], visEdges = [];
 let needsRender = true, hoverEasing = false;
+let needsStatic = true; // starfield + galaxy atmospheres: only redrawn on pan/zoom/resize/theme
+let lastStaticCam = { x: NaN, y: NaN, k: NaN }; // detect viewport changes
 let edgeMin = 0.35, sameProjOnly = false;  // link display filters
 let topicNesting = true;  // nest same-topic nodes inside their galaxy (physics term in step())
-let graphLimit = 150;
+let graphLimit = 500;
 let listQuery = "", listPage = 1, listPageSize = 75;
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-function invalidate() { needsRender = true; }
+function invalidate() { needsRender = true; needsStatic = true; }
 try {
   const savedLayout = JSON.parse(localStorage.getItem("hermes-atlas-layout") || "{}");
   projectSpacing = Math.min(2.2, Math.max(0.7, Number(savedLayout.spacing) || 1));
@@ -870,6 +898,7 @@ try {
 } catch (e) { /* theme follows manual toggle only */ }
 
 function projectColor(slug) {
+  if (customColors.has(slug)) return customColors.get(slug);
   return PROJECT_PALETTE[strHash(slug) % PROJECT_PALETTE.length];
 }
 function colorOf(n) { return projectColor(n.project_id); }
@@ -1164,13 +1193,68 @@ function buildChips(slugs) {
     const chip = document.createElement("span");
     chip.className = "chip" + (selProjects.has(slug) ? "" : " off");
     chip.dataset.slug = slug;
-    chip.innerHTML = `<span class="dot" style="background:${projectColor(slug)}"></span>${escapeHtml(slug)} <span class="n">${count}</span><span class="edit" title="Rename project">✎</span>`;
+    const custom = customColors.has(slug) ? " color-picker-modified" : "";
+    chip.innerHTML = `<span class="dot${custom}" style="background:${projectColor(slug)}" title="Click to change color · Double-click to reset"></span>${escapeHtml(slug)} <span class="n">${count}</span><span class="edit" title="Rename project">✎</span>`;
     chip.onclick = () => {
       toggleSet(selProjects, slug, slugs);
       refreshChips();
       // Only fly there if the click left it visible — toggling it OFF
       // (hiding the galaxy) shouldn't also point the camera at it.
       if (selProjects.has(slug)) flyToGalaxy(slug);
+    };
+    const dot = chip.querySelector(".dot");
+    const picker = document.createElement("input");
+    picker.type = "color";
+    picker.value = projectColor(slug);
+    picker.style.position = "absolute";
+    picker.style.opacity = "0";
+    picker.style.pointerEvents = "none";
+    picker.style.width = "0"; picker.style.height = "0";
+    dot.appendChild(picker);
+
+    // Prevent picker click events from bubbling up to dot and causing infinite recursion
+    picker.onclick = e => e.stopPropagation();
+
+    dot.onclick = e => {
+      // Single click: open color picker. Double-click: reset to default palette color.
+      if (e.detail === 2) {
+        e.stopPropagation();
+        customColors.delete(slug);
+        saveCustomColors();
+        refreshAllProjectColors();
+        invalidate();
+        return;
+      }
+      e.stopPropagation();
+      picker.click();
+    };
+    // Also support double-click on the chip itself (outside the dot) to reset color
+    chip.ondblclick = e => {
+      if (e.target.closest(".edit")) return;  // don't trigger on edit button
+      if (e.target.closest(".dot")) return;   // dot handles its own dblclick
+      e.stopPropagation();
+      if (customColors.has(slug)) {
+        customColors.delete(slug);
+        saveCustomColors();
+        refreshAllProjectColors();
+        invalidate();
+      } else {
+        // no custom color yet: open picker
+        dot.querySelector("input[type=color]").click();
+      }
+    };
+    picker.oninput = () => {
+      const c = picker.value;
+      dot.style.background = c;
+    };
+    picker.onchange = () => {
+      const c = picker.value;
+      const defColor = PROJECT_PALETTE[strHash(slug) % PROJECT_PALETTE.length];
+      if (c !== defColor) customColors.set(slug, c);
+      else customColors.delete(slug);
+      saveCustomColors();
+      refreshAllProjectColors();
+      invalidate();
     };
     chip.querySelector(".edit").onclick = e => { e.stopPropagation(); renameProject(slug); };
     pc.appendChild(chip);
@@ -1204,6 +1288,26 @@ function ddLabel(selected, total) {
 function updateDDCounts() {
   $("projectDDCount").textContent = ddLabel(selProjects.size, lastSlugs.length);
   $("typeDDCount").textContent = ddLabel(selTypes.size, TYPES.length);
+}
+// Refresh ALL inline project dot colors after a custom color change.
+// When the user picks a new color for a project, every dot in chips,
+// panel, list, tooltip etc. must reflect it immediately.
+function refreshAllProjectColors() {
+  // project chip dots
+  $("projectChips").querySelectorAll(".chip").forEach(c => {
+    const slug = c.dataset.slug;
+    const dot = c.querySelector(".dot");
+    if (dot) {
+      dot.style.background = projectColor(slug);
+      dot.classList.toggle("color-picker-modified", customColors.has(slug));
+    }
+  });
+  // buildChips doesn't get called on every change, so we need to also
+  // rebuild transitively-rendered UI so the new color renders everywhere.
+  readCss();
+  buildChips(lastSlugs);
+  if (selected) select(selected, false);  // re-render panel
+  if ($("list").style.display !== "none") renderList();
 }
 function closeAllDD(except) {
   document.querySelectorAll(".filter-dd.open").forEach(el => { if (el !== except) el.classList.remove("open"); });
@@ -1366,6 +1470,8 @@ function resize() {
   viewW = r.width; viewH = r.height;
   canvas.width = r.width * dpr; canvas.height = r.height * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  canvasBg.width = r.width * dpr; canvasBg.height = r.height * dpr;
+  ctxBg.setTransform(dpr, 0, 0, dpr, 0, 0);
   invalidate();
 }
 addEventListener("resize", resize);
@@ -1453,109 +1559,97 @@ function drawAsteroidSpiral(cx, cy, maxRadius, count, turns, direction, squash, 
 }
 
 let lastZoomLabel = "";
-function draw() {
-  const zoomLabel = `${Math.max(1, Math.round(cam.k * 100))}%`;
-  if (zoomLabel !== lastZoomLabel) {
-    $("zoomValue").textContent = zoomLabel;
-    lastZoomLabel = zoomLabel;
-  }
-  ctx.clearRect(0, 0, viewW, viewH);
+// ── Static background layer (canvas_bg) ─────────────────────────────
+// Starfield + galaxy atmospheres + cross-project bridges + central core.
+// Only repainted when the viewport (cam) changes or on theme/resize — these
+// elements ARE affected by pan/zoom but NOT by hover, simulation, or data.
+function drawStatic() {
+  // Detect viewport change (need to re-compute if cam moved)
+  if (!needsStatic) return;
   const off_l = -60, off_t = -60, off_r = viewW + 60, off_b = viewH + 60;
 
-  // Central core: with multiple galaxies, the middle of the
-  // map is otherwise just empty starfield — this gives it a focal point
-  // and doubles as a compass anchor while navigating. Purely decorative:
-  // no data lives at (0,0). Asteroids below now imply orbit without a line.
+  ctxBg.clearRect(0, 0, viewW, viewH);
+
+  // ── Starfield ──
+  {
+    let cell = 50;
+    while (cell * cam.k < 16) cell *= 2;
+    const [wx0, wy0] = screenToWorld(0, 0);
+    const [wx1, wy1] = screenToWorld(viewW, viewH);
+    const ix0 = Math.floor(Math.min(wx0, wx1) / cell) - 1, ix1 = Math.ceil(Math.max(wx0, wx1) / cell) + 1;
+    const iy0 = Math.floor(Math.min(wy0, wy1) / cell) - 1, iy1 = Math.ceil(Math.max(wy0, wy1) / cell) + 1;
+    const tiers = [
+      { size: 1.2, alpha: 0.38 },
+      { size: 1.8, alpha: 0.55 },
+      { size: 2.6, alpha: 0.8 },
+    ];
+    ctxBg.fillStyle = css["--text-muted"];
+    for (const tier of tiers) {
+      ctxBg.globalAlpha = tier.alpha;
+      ctxBg.beginPath();
+      for (let ix = ix0; ix <= ix1; ix++) {
+        for (let iy = iy0; iy <= iy1; iy++) {
+          const h = hash2(ix, iy);
+          const bucket = h < 0.72 ? 0 : h < 0.94 ? 1 : 2;
+          if (bucket !== tiers.indexOf(tier)) continue;
+          const jx = (hash2(ix * 3 + 1, iy) - 0.5) * cell * 0.7;
+          const jy = (hash2(ix, iy * 5 + 7) - 0.5) * cell * 0.7;
+          const [sx, sy] = worldToScreen(ix * cell + jx, iy * cell + jy);
+          if (sx < off_l || sx > off_r || sy < off_t || sy > off_b) continue;
+          ctxBg.rect(sx, sy, tier.size, tier.size);
+        }
+      }
+      ctxBg.fill();
+    }
+    ctxBg.globalAlpha = 1;
+  }
+
+  // Central core glow (multi-galaxy only)
   if (orbitRadius > 0) {
     const [ox, oy] = worldToScreen(0, 0);
     const coreRad = 34 * cam.k;
     if (ox + coreRad * 4 > 0 && ox - coreRad * 4 < viewW && oy + coreRad * 4 > 0 && oy - coreRad * 4 < viewH) {
-      ctx.globalAlpha = 1;
-      const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, coreRad * 4);
+      const cg = ctxBg.createRadialGradient(ox, oy, 0, ox, oy, coreRad * 4);
       cg.addColorStop(0, hexToRgba(css["--accent"], 0.5));
       cg.addColorStop(0.25, hexToRgba(css["--accent"], 0.16));
       cg.addColorStop(1, hexToRgba(css["--accent"], 0));
-      ctx.fillStyle = cg;
-      ctx.beginPath(); ctx.arc(ox, oy, coreRad * 4, 0, 7); ctx.fill();
-
-      ctx.fillStyle = css["--accent"];
-      ctx.beginPath(); ctx.arc(ox, oy, Math.max(3, coreRad * 0.16), 0, 7); ctx.fill();
+      ctxBg.fillStyle = cg;
+      ctxBg.beginPath(); ctxBg.arc(ox, oy, coreRad * 4, 0, 7); ctxBg.fill();
+      ctxBg.fillStyle = css["--accent"];
+      ctxBg.beginPath(); ctxBg.arc(ox, oy, Math.max(3, coreRad * 0.16), 0, 7); ctxBg.fill();
     }
   }
 
-  // Project systems: a colored atmosphere plus clean hub-to-memory spokes.
-  // Unlike semantic edges, spokes describe ownership and make each galaxy
-  // readable even when hundreds of memories are loaded.
+  // ── Galaxy atmospheres + spokes ──
   for (const [slug, c] of projectCenter) {
     if (!selProjects.has(slug)) continue;
     const [x, y] = worldToScreen(c.x, c.y);
     const projectHex = projectColor(slug);
     const rad = Math.max(c.r, 145) * cam.k * 1.22;
     if (x + rad < 0 || x - rad > viewW || y + rad < 0 || y - rad > viewH) continue;
-    const ng = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    const ng = ctxBg.createRadialGradient(x, y, 0, x, y, rad);
     ng.addColorStop(0, hexToRgba(projectHex, 0.16));
     ng.addColorStop(0.42, hexToRgba(projectHex, 0.055));
     ng.addColorStop(1, hexToRgba(projectHex, 0));
-    ctx.fillStyle = ng;
-    ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
+    ctxBg.fillStyle = ng;
+    ctxBg.beginPath(); ctxBg.arc(x, y, rad, 0, 7); ctxBg.fill();
 
-    ctx.strokeStyle = projectHex;
-    ctx.lineWidth = 1;
+    ctxBg.strokeStyle = projectHex;
+    ctxBg.lineWidth = 1;
     for (const n of (visNodesByProject.get(slug) || [])) {
       const [nx, ny] = worldToScreen(n.x, n.y);
       const dx = nx - x, dy = ny - y;
       const bend = ((strHash(String(n.id)) % 21) - 10) * 0.7;
-      ctx.globalAlpha = 0.12 + Math.min(0.16, (n.importance || 0.5) * 0.13);
-      ctx.beginPath(); ctx.moveTo(x, y);
-      ctx.quadraticCurveTo(x + dx * 0.52 - dy * 0.08 + bend,
+      ctxBg.globalAlpha = 0.12 + Math.min(0.16, (n.importance || 0.5) * 0.13);
+      ctxBg.beginPath(); ctxBg.moveTo(x, y);
+      ctxBg.quadraticCurveTo(x + dx * 0.52 - dy * 0.08 + bend,
         y + dy * 0.52 + dx * 0.08 + bend, nx, ny);
-      ctx.stroke();
+      ctxBg.stroke();
     }
-    ctx.globalAlpha = 1;
+    ctxBg.globalAlpha = 1;
   }
 
-  // Starfield: world-anchored so it pans/zooms like a real backdrop (not a
-  // screen-locked texture), three fixed brightness tiers batched into one
-  // fill call each (thousands of individually-styled dots would be slow).
-  // Cell coordinates are hashed for a stable per-star look — same stars
-  // every redraw, no per-frame flicker. --text-muted (not --edge) for
-  // contrast: this needs to read clearly even on a light surface.
-  {
-    let cell = 50;
-    while (cell * cam.k < 16) cell *= 2;  // cap on-screen density when zoomed out
-    const [wx0, wy0] = screenToWorld(0, 0);
-    const [wx1, wy1] = screenToWorld(viewW, viewH);
-    const ix0 = Math.floor(Math.min(wx0, wx1) / cell) - 1, ix1 = Math.ceil(Math.max(wx0, wx1) / cell) + 1;
-    const iy0 = Math.floor(Math.min(wy0, wy1) / cell) - 1, iy1 = Math.ceil(Math.max(wy0, wy1) / cell) + 1;
-    const tiers = [
-      { size: 1.2, alpha: 0.38 }, // dim — most stars
-      { size: 1.8, alpha: 0.55 }, // mid
-      { size: 2.6, alpha: 0.8 },  // bright — rare
-    ];
-    ctx.fillStyle = css["--text-muted"];
-    for (const tier of tiers) {
-      ctx.globalAlpha = tier.alpha;
-      ctx.beginPath();
-      for (let ix = ix0; ix <= ix1; ix++) {
-        for (let iy = iy0; iy <= iy1; iy++) {
-          const h = hash2(ix, iy);
-          const bucket = h < 0.72 ? 0 : h < 0.94 ? 1 : 2;  // 72% / 22% / 6%
-          if (bucket !== tiers.indexOf(tier)) continue;
-          // small deterministic jitter so it doesn't read as a rigid grid
-          const jx = (hash2(ix * 3 + 1, iy) - 0.5) * cell * 0.7;
-          const jy = (hash2(ix, iy * 5 + 7) - 0.5) * cell * 0.7;
-          const [sx, sy] = worldToScreen(ix * cell + jx, iy * cell + jy);
-          if (sx < off_l || sx > off_r || sy < off_t || sy > off_b) continue;
-          ctx.rect(sx, sy, tier.size, tier.size);
-        }
-      }
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  // Cross-project relationship bridges. One strongest bridge per pair keeps
-  // the global map informative without turning it into a white-line web.
+  // ── Cross-project bridges ──
   const bridgeByPair = new Map();
   for (const e of visEdges) {
     const a = e.a.project_id, b = e.b.project_id;
@@ -1568,17 +1662,32 @@ function draw() {
     if (!ca || !cb || !selProjects.has(e.a.project_id) || !selProjects.has(e.b.project_id)) continue;
     const [x1, y1] = worldToScreen(ca.x, ca.y), [x2, y2] = worldToScreen(cb.x, cb.y);
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    const grad = ctxBg.createLinearGradient(x1, y1, x2, y2);
     grad.addColorStop(0, hexToRgba(projectColor(e.a.project_id), 0.46));
     grad.addColorStop(0.5, hexToRgba(css["--text-muted"], 0.16));
     grad.addColorStop(1, hexToRgba(projectColor(e.b.project_id), 0.46));
-    ctx.strokeStyle = grad; ctx.lineWidth = 1;
-    ctx.setLineDash([4, 7]);
-    ctx.beginPath(); ctx.moveTo(x1, y1);
-    ctx.quadraticCurveTo(mx, my - Math.min(55, Math.abs(x2 - x1) * 0.08), x2, y2);
-    ctx.stroke(); ctx.setLineDash([]);
+    ctxBg.strokeStyle = grad; ctxBg.lineWidth = 1;
+    ctxBg.setLineDash([4, 7]);
+    ctxBg.beginPath(); ctxBg.moveTo(x1, y1);
+    ctxBg.quadraticCurveTo(mx, my - Math.min(55, Math.abs(x2 - x1) * 0.08), x2, y2);
+    ctxBg.stroke(); ctxBg.setLineDash([]);
   }
 
+  needsStatic = false;
+  lastStaticCam.k = cam.k;
+}
+
+// ── Dynamic foreground layer (canvas) ──
+function drawDynamic() {
+  const zoomLabel = `${Math.max(1, Math.round(cam.k * 100))}%`;
+  if (zoomLabel !== lastZoomLabel) {
+    $("zoomValue").textContent = zoomLabel;
+    lastZoomLabel = zoomLabel;
+  }
+  ctx.clearRect(0, 0, viewW, viewH);
+  const off_l = -60, off_t = -60, off_r = viewW + 60, off_b = viewH + 60;
+
+  // ── Semantic edges (within same project) ──
   const neighbors = selected ? (adj.get(selected.id) || new Set()) : null;
   const hoverNb = (!selected && hovered) ? (adj.get(hovered.id) || new Set()) : null;
   const dimmed = n =>
@@ -1590,7 +1699,6 @@ function draw() {
     if (e.a.project_id !== e.b.project_id) continue;
     const [x1, y1] = worldToScreen(e.a.x, e.a.y);
     const [x2, y2] = worldToScreen(e.b.x, e.b.y);
-    // viewport culling: skip edges entirely outside the screen
     if ((x1 < off_l && x2 < off_l) || (x1 > off_r && x2 > off_r) ||
         (y1 < off_t && y2 < off_t) || (y1 > off_b && y2 > off_b)) continue;
     const active = (selected && (e.a === selected || e.b === selected)) ||
@@ -1599,14 +1707,12 @@ function draw() {
       : active ? 0.85 : 0.035 + (e.weight - 0.35) * 0.12;
     ctx.strokeStyle = active ? css["--accent"] : css["--edge"];
     ctx.lineWidth = active ? 1.6 : 1;
-    // soft curved edges: a slight perpendicular bow
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
     const dx = x2 - x1, dy = y2 - y1, d = Math.hypot(dx, dy) || 1;
     const off = Math.min(26, d * 0.09);
     ctx.beginPath(); ctx.moveTo(x1, y1);
     ctx.quadraticCurveTo(mx - dy / d * off, my + dx / d * off, x2, y2);
     ctx.stroke();
-    // entity mode: relation name at the edge midpoint
     if (e.label) {
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillStyle = active ? css["--accent"] : css["--text-muted"];
@@ -1617,8 +1723,7 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
-  // Prominent project hubs sit above the relationship web, matching the
-  // reference's central topic cards. Hub size stays readable while zooming.
+  // ── Project hubs (drawn ABOVE edges for visual clarity) ──
   ctx.textAlign = "center";
   for (const [slug, c] of projectCenter) {
     if (!selProjects.has(slug)) continue;
@@ -1647,7 +1752,7 @@ function draw() {
   }
   ctx.textAlign = "left";
 
-  // selection ripple
+  // ── Selection ripple ──
   if (ripple) {
     ripple.t += 0.045;
     if (ripple.t >= 1) ripple = null;
@@ -1662,84 +1767,84 @@ function draw() {
     }
   }
 
-  const showLabels = visNodes.length <= 80 || cam.k >= 0.78;
-  hoverEasing = false;
-  for (const n of visNodes) {
-    // hover/selection scale eases in and out
-    const target = (n === hovered || n === selected) ? 1 : 0;
-    n.hs += (target - n.hs) * 0.2;
-    if (Math.abs(target - n.hs) > 0.005) hoverEasing = true;
-    const [x, y] = worldToScreen(n.x, n.y);
-    if (x < off_l || x > off_r || y < off_t || y > off_b) continue;  // culled
-    const rad = screenRadius(n) * (1 + 0.22 * n.hs);
-    const dim = dimmed(n);
-    ctx.globalAlpha = dim ? 0.13 : (n.superseded ? 0.45 : 1);
-    ctx.fillStyle = colorOf(n);
-
-    if (n.type === "preference" && !dim) {
-      // Comet tail: streaks away from the memory's own galaxy center, like
-      // a comet trailing away from the star it orbits.
-      const c = projectCenter.get(n.project_id) || { x: 0, y: 0 };
-      let tx = n.x - c.x, ty = n.y - c.y;
-      const tl = Math.hypot(tx, ty) || 1;
-      tx /= tl; ty /= tl;
-      const len = rad * 3.2;
-      const grad = ctx.createLinearGradient(x, y, x - tx * len, y - ty * len);
-      grad.addColorStop(0, ctx.fillStyle);
-      grad.addColorStop(1, "transparent");
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = Math.max(1.4, rad * 0.35);
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - tx * len, y - ty * len); ctx.stroke();
-    }
-    if (n.type === "decision" && !dim) {
-      // Bright star: a soft glow halo behind the sparkle shape.
-      ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 12 * cam.k;
-    }
-    drawShape(x, y, rad, n.type);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    if (n.type === "task" && !dim) {
-      // Satellite orbit ring.
-      ctx.globalAlpha = (dim ? 0.13 : (n.superseded ? 0.45 : 1)) * 0.6;
-      ctx.strokeStyle = colorOf(n); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.ellipse(x, y, rad * 1.7, rad * 0.8, -0.5, 0, 7); ctx.stroke();
+  // ── Nodes ──
+    const showLabels = cam.k >= 0.3;
+    const fastMode = visNodes.length > 600 && cam.k < 1.5; // skip expensive effects when overloaded
+    hoverEasing = false;
+    for (const n of visNodes) {
+      const target = (n === hovered || n === selected) ? 1 : 0;
+      n.hs += (target - n.hs) * 0.2;
+      if (Math.abs(target - n.hs) > 0.005) hoverEasing = true;
+      const [x, y] = worldToScreen(n.x, n.y);
+      if (x < off_l || x > off_r || y < off_t || y > off_b) continue;
+      const rad = screenRadius(n) * (1 + 0.22 * n.hs);
+      const dim = dimmed(n);
       ctx.globalAlpha = dim ? 0.13 : (n.superseded ? 0.45 : 1);
+      ctx.fillStyle = colorOf(n);
+
+      if (!fastMode && n.type === "preference" && !dim) {
+        const c = projectCenter.get(n.project_id) || { x: 0, y: 0 };
+        let tx = n.x - c.x, ty = n.y - c.y;
+        const tl = Math.hypot(tx, ty) || 1;
+        tx /= tl; ty /= tl;
+        const len = rad * 3.2;
+        const grad = ctx.createLinearGradient(x, y, x - tx * len, y - ty * len);
+        grad.addColorStop(0, ctx.fillStyle);
+        grad.addColorStop(1, "transparent");
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = Math.max(1.4, rad * 0.35);
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - tx * len, y - ty * len); ctx.stroke();
+      }
+      if (!fastMode && n.type === "decision" && !dim) {
+        ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 12 * cam.k;
+      }
+      drawShape(x, y, rad, n.type);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      if (!fastMode && n.type === "task" && !dim) {
+        ctx.globalAlpha = (dim ? 0.13 : (n.superseded ? 0.45 : 1)) * 0.6;
+        ctx.strokeStyle = colorOf(n); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.ellipse(x, y, rad * 1.7, rad * 0.8, -0.5, 0, 7); ctx.stroke();
+        ctx.globalAlpha = dim ? 0.13 : (n.superseded ? 0.45 : 1);
+      }
+      if (n.superseded) {
+        ctx.setLineDash([3, 3]); ctx.strokeStyle = css["--text-muted"];
+        ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+      }
+      if (n === selected || (highlight && highlight.has(n.id))) {
+        ctx.strokeStyle = css["--text-primary"]; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, 7); ctx.stroke();
+      }
+      if (selected && n !== selected && !dim &&
+          n.session_id && n.session_id === selected.session_id) {
+        ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 1.5;
+        ctx.setLineDash([1.5, 3.5]);
+        ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, 7); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (multiSel.has(n.id)) {
+        ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (!fastMode && showLabels && !dim) {
+        ctx.fillStyle = css["--text-secondary"];
+        ctx.font = `${n.hs > 0.5 ? "600 " : ""}11px -apple-system, sans-serif`;
+        const label = n.text.length > 23 ? n.text.slice(0, 22) + "…" : n.text;
+        const gc = projectCenter.get(n.project_id) || { x: n.x - 1 };
+        const toRight = n.x >= gc.x;
+        ctx.textAlign = toRight ? "left" : "right";
+        ctx.fillText(label, x + (toRight ? rad + 6 : -rad - 6), y + 3.5);
+        ctx.textAlign = "left";
+      }
     }
-    if (n.superseded) {
-      ctx.setLineDash([3, 3]); ctx.strokeStyle = css["--text-muted"];
-      ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
-    }
-    if (n === selected || (highlight && highlight.has(n.id))) {
-      ctx.strokeStyle = css["--text-primary"]; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, 7); ctx.stroke();
-    }
-    if (selected && n !== selected && !dim &&
-        n.session_id && n.session_id === selected.session_id) {
-      // session siblings of the selection — the family that "Re-tag whole
-      // session" moves together
-      ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 1.5;
-      ctx.setLineDash([1.5, 3.5]);
-      ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, 7); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if (multiSel.has(n.id)) {
-      ctx.strokeStyle = css["--accent"]; ctx.lineWidth = 2;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if ((showLabels || n.labelRank < 1) && !dim) {
-      ctx.fillStyle = css["--text-secondary"];
-      ctx.font = `${n.hs > 0.5 ? "600 " : ""}11px -apple-system, sans-serif`;
-      const label = n.text.length > 23 ? n.text.slice(0, 22) + "…" : n.text;
-      const gc = projectCenter.get(n.project_id) || { x: n.x - 1 };
-      const toRight = n.x >= gc.x;
-      ctx.textAlign = toRight ? "left" : "right";
-      ctx.fillText(label, x + (toRight ? rad + 6 : -rad - 6), y + 3.5);
-      ctx.textAlign = "left";
-    }
-  }
   ctx.globalAlpha = 1;
+}
+
+// Mark static layer dirty when viewport changes
+function _markStatic() {
+  if (cam.k !== lastStaticCam.k) needsStatic = true;
 }
 
 function loop() {
@@ -1747,8 +1852,14 @@ function loop() {
   step();
   glideCamera();
   glideWheel();
+
+  // Static layer: only repainted when viewport moves (pan/zoom/resize/theme)
+  if (needsStatic || camTarget || wheelGlide || dragging || panning) {
+    drawStatic();
+  }
+  // Dynamic layer: repainted on any state change
   if (needsRender || simActive || camTarget || wheelGlide || ripple || hoverEasing) {
-    draw();
+    drawDynamic();
     needsRender = false;
   }
   requestAnimationFrame(loop);

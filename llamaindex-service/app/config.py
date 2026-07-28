@@ -103,9 +103,19 @@ RECALL_TOP_K_MEMORIES = int(os.getenv("RECALL_TOP_K_MEMORIES", "5"))
 RECALL_TOP_K_HISTORY = int(os.getenv("RECALL_TOP_K_HISTORY", "3"))
 RECALL_RECENT_TURNS = int(os.getenv("RECALL_RECENT_TURNS", "6"))
 RECALL_MIN_SCORE = float(os.getenv("RECALL_MIN_SCORE", "0.25"))
+# Item-level budget for the assembled context_block: fill greedily in
+# section-priority order, never cutting a fact/chunk/turn mid-line — an item
+# that doesn't fit is dropped whole instead. Conservative default matches the
+# hook-side LONGBRAIN_MEMORY_MAX_CONTEXT ceiling those callers already
+# enforce, so this changes HOW the cut happens, not how much gets through.
+CONTEXT_BUDGET_CHARS = int(os.getenv("CONTEXT_BUDGET_CHARS", "6000"))
 # Half-lives (days) for the recency decay applied on top of similarity.
 MEMORY_HALF_LIFE_DAYS = float(os.getenv("MEMORY_HALF_LIFE_DAYS", "90"))
 HISTORY_HALF_LIFE_DAYS = float(os.getenv("HISTORY_HALF_LIFE_DAYS", "30"))
+# Documents are reference material, not conversational facts — slower decay
+# than MEMORY_HALF_LIFE_DAYS so a still-relevant doc isn't penalized just for
+# not having been re-ingested recently.
+DOC_HALF_LIFE_DAYS = float(os.getenv("DOC_HALF_LIFE_DAYS", "180"))
 # Similarity above which a new fact supersedes an existing one — auto,
 # no LLM check needed (near-exact text).
 SUPERSEDE_SIMILARITY = float(os.getenv("SUPERSEDE_SIMILARITY", "0.92"))

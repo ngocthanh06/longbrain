@@ -548,14 +548,19 @@ def search_memories(
         # Facts saved before this field existed fall back to created_at.
         last_seen = payload.get("last_seen") or payload.get("created_at") or now
         age = max(now - last_seen, 0.0)
-        final = e["similarity"] * _decay(age, config.MEMORY_HALF_LIFE_DAYS) * (0.5 + 0.5 * importance)
+        decay_factor = _decay(age, config.MEMORY_HALF_LIFE_DAYS)
+        final = e["similarity"] * decay_factor * (0.5 + 0.5 * importance)
         hit_project = payload.get("project_id") or config.DEFAULT_PROJECT
-        if scope_policy.boost_same_project(project, hit_project, project_scope, config.DEFAULT_PROJECT):
+        project_boost_applied = scope_policy.boost_same_project(
+            project, hit_project, project_scope, config.DEFAULT_PROJECT
+        )
+        if project_boost_applied:
             final *= config.RECALL_PROJECT_BOOST
-        if payload.get("type") == "preference":
-            # Standing conventions must survive the top-k race against
-            # fresher, project-boosted same-topic facts at the moment of
-            # acting on them (see config.RECALL_PREFERENCE_BOOST).
+        # Standing conventions must survive the top-k race against fresher,
+        # project-boosted same-topic facts at the moment of acting on them
+        # (see config.RECALL_PREFERENCE_BOOST).
+        preference_boost_applied = payload.get("type") == "preference"
+        if preference_boost_applied:
             final *= config.RECALL_PREFERENCE_BOOST
         scored.append(
             {
@@ -570,6 +575,17 @@ def search_memories(
                 "conflicts_with": payload.get("conflicts_with"),
                 "similarity": e["similarity"],
                 "score": final,
+                # Traceability (why this item was surfaced/ranked here):
+                # decomposed factors behind `score`, not shown in context_block.
+                "trace": {
+                    "point_id": str(e["id"]),
+                    "source_agent": payload.get("source_agent") or "",
+                    "project_id": hit_project,
+                    "decay_factor": decay_factor,
+                    "project_boost_applied": project_boost_applied,
+                    "preference_boost_applied": preference_boost_applied,
+                    "final_score": final,
+                },
             }
         )
     scored.sort(key=lambda m: m["score"], reverse=True)
@@ -1040,6 +1056,31 @@ def _fmt_date(ts: float | None) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
+def _budget_lines(sections: list[tuple[str, list[str]]], budget: int) -> list[str]:
+    """Item-level context budgeting: fill `budget` chars greedily in the
+    caller's section-priority order. An item that doesn't fit is dropped
+    whole — never cut mid-line — and a section's header is only emitted if
+    at least one of its items actually fits."""
+    lines: list[str] = []
+    used = 0
+    for header, items in sections:
+        header_added = False
+        for item in items:
+            cost = len(item) + 1  # + newline joiner
+            if not header_added:
+                header_cost = len(header) + 1
+                if used + header_cost + cost > budget:
+                    break  # not even the header + one item fits in this section
+                lines.append(header)
+                used += header_cost
+                header_added = True
+            elif used + cost > budget:
+                break
+            lines.append(item)
+            used += cost
+    return lines
+
+
 def recall(
     client: QdrantClient,
     embed_model,
@@ -1142,36 +1183,34 @@ def recall(
         "recent": "[Các lượt gần nhất trong phiên này]" if vn else "[Most recent turns in this session]",
     }
 
-    lines: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
     if mems:
-        lines.append(headers["memories"])
-        lines += [
+        sections.append((headers["memories"], [
             f"- ({m['type']}, {_fmt_date(m['created_at'])}{_agent(m)}) {m['text']}{_conflict(m)}"
             for m in mems
-        ]
+        ]))
     if summaries:
-        lines.append(headers["summaries"])
-        lines += [
+        sections.append((headers["summaries"], [
             f"- ({sid}, {_fmt_date(s['created_at'])}{_agent(s)}) {s['text'][:500]}"
             for sid, s in summaries.items()
-        ]
+        ]))
     raw_history = [h for h in history if h["session_id"] not in summaries]
     if raw_history:
-        lines.append(headers["history"])
-        lines += [
+        sections.append((headers["history"], [
             f"- ({h['session_id']}, {_fmt_date(h['timestamp'])}{_agent(h)}) "
             f"{h['role']}: {h['content'][:300]}"
             for h in raw_history
-        ]
+        ]))
     if docs:
-        lines.append(headers["docs"])
-        lines += [
+        sections.append((headers["docs"], [
             f"- ({d['source']}) {d['text'][:config.RECALL_DOC_SNIPPET_CHARS]}"
             for d in docs
-        ]
+        ]))
     if recent:
-        lines.append(headers["recent"])
-        lines += [f"- {t['role']}: {t['content'][:300]}" for t in recent]
+        sections.append((headers["recent"], [
+            f"- {t['role']}: {t['content'][:300]}" for t in recent
+        ]))
+    lines = _budget_lines(sections, config.CONTEXT_BUDGET_CHARS)
 
     return {
         "project": project or config.DEFAULT_PROJECT,

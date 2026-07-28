@@ -16,7 +16,10 @@ CLAUDE_HOOKS = REPO / "hooks" / "claude"
 sys.path.insert(0, str(CLAUDE_HOOKS))
 
 from common import (  # noqa: E402,F401
+    cap_context,
     MEMORY_BASE,
+    MIN_PROMPT_CHARS,
+    context_prefix,
     env_get,
     env_int,
     get_json,

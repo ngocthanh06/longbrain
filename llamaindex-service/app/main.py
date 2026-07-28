@@ -393,8 +393,20 @@ async def ingest_file(
     parsed_metadata.setdefault("source", file.filename)
     parsed_metadata["stored_path"] = str(stored)
     if documents.already_ingested(state["qdrant_client"], str(stored), project_id):
+        document_key = parsed_metadata.get("document_key")
+        if document_key:
+            # A legacy content-addressed chunk may already exist without the
+            # stable logical identity. Repair its metadata in place instead
+            # of inserting an identical second copy during a forced watcher
+            # pass, then apply normal version supersession.
+            documents.tag_existing_version(
+                state["qdrant_client"], project_id, str(stored), document_key
+            )
+            documents._supersede_previous_versions(
+                state["qdrant_client"], project_id, document_key, str(stored)
+            )
         return IngestResponse(
-            status="skipped_duplicate",
+            status="repaired_duplicate" if document_key else "skipped_duplicate",
             total_chunks_indexed=documents.point_count(state["qdrant_client"]),
         )
     total = documents.ingest_file(

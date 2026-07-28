@@ -289,11 +289,16 @@ def _register_tools() -> None:
             # distinct from "no matching documents".
             return ("Document search unavailable (doc_embedder_unavailable): "
                     + (state.get("doc_embed_error") or "unknown error"))
-        filters = None
-        if project:
-            from llama_index.core.vector_stores.types import MetadataFilter, MetadataFilters
+        from llama_index.core.vector_stores.types import (
+            FilterOperator, MetadataFilter, MetadataFilters,
+        )
 
-            filters = MetadataFilters(filters=[MetadataFilter(key="project_id", value=project)])
+        conditions = [
+            MetadataFilter(key="superseded_by", operator=FilterOperator.IS_EMPTY, value=None)
+        ]
+        if project:
+            conditions.append(MetadataFilter(key="project_id", value=project))
+        filters = MetadataFilters(filters=conditions)
         from app import rerank as _rerank
 
         fetch_k = max(top_k, config.DOC_RERANK_CANDIDATES) \
