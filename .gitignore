@@ -23,6 +23,7 @@ venv/
 
 # --- Local landing page (kept outside version control) ---
 landingpage/
+connectors/
 
 # --- Local document-search evaluation data ---
 # These files are derived from private document corpora and may contain
@@ -33,3 +34,4 @@ llamaindex-service/evals/search_eval_results_*.json
 # Live recall canaries are derived from the owner's private memory store.
 llamaindex-service/evals/recall_live_eval.local.json
 llamaindex-service/evals/recall_live_baseline.local.json
+
