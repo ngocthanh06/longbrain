@@ -81,6 +81,11 @@ DOCUMENTS_COLLECTION = os.getenv("DOCUMENTS_COLLECTION", "longbrain_documents")
 CHAT_HISTORY_COLLECTION = os.getenv("CHAT_HISTORY_COLLECTION", "longbrain_chat_history")
 MEMORIES_COLLECTION = os.getenv("MEMORIES_COLLECTION", "longbrain_memories")
 META_COLLECTION = os.getenv("META_COLLECTION", "longbrain_meta")
+# Off for a documents-only deployment (e.g. Connector Layer's own backend —
+# see docker-compose.yml's connector-layer-backend service): it never calls
+# /chat, /memory/*, or consolidation, so provisioning CHAT_HISTORY_COLLECTION/
+# MEMORIES_COLLECTION would just be two permanently-empty collections.
+PROVISION_MEMORY_COLLECTIONS = os.getenv("PROVISION_MEMORY_COLLECTIONS", "true").lower() == "true"
 
 # Single-user deployment default. Kept in every payload so a future move to a
 # shared multi-user server is a data-compatible change, not a migration.
@@ -116,6 +121,16 @@ HISTORY_HALF_LIFE_DAYS = float(os.getenv("HISTORY_HALF_LIFE_DAYS", "30"))
 # than MEMORY_HALF_LIFE_DAYS so a still-relevant doc isn't penalized just for
 # not having been re-ingested recently.
 DOC_HALF_LIFE_DAYS = float(os.getenv("DOC_HALF_LIFE_DAYS", "180"))
+# Connector Layer federation (see connectors/google_drive/README.md): a
+# sibling backend (its own collections/embedder, e.g. connector-layer-backend
+# on :8801) whose document search results get merged into the docs channel
+# of recall(). Empty = disabled (the common case — most deployments have no
+# connector backend at all). Short timeout + fail-open by design: an
+# unreachable/slow connector must never fail or stall a recall.
+CONNECTOR_SEARCH_URL = os.getenv("CONNECTOR_SEARCH_URL", "")
+# Measured real latency for a connector backend's query embedding (BGE-M3 on
+# CPU): ~190-430ms. 800ms leaves margin for a cold request.
+CONNECTOR_SEARCH_TIMEOUT_MS = int(os.getenv("CONNECTOR_SEARCH_TIMEOUT_MS", "800"))
 # Similarity above which a new fact supersedes an existing one — auto,
 # no LLM check needed (near-exact text).
 SUPERSEDE_SIMILARITY = float(os.getenv("SUPERSEDE_SIMILARITY", "0.92"))

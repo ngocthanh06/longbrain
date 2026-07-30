@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 import tempfile
 import time
@@ -19,6 +20,8 @@ from app import config, consolidation, documents, enrich, memories, memory_store
 from app.mcp_server import mcp
 from app.runtime import state
 
+logger = logging.getLogger("uvicorn")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,56 +33,84 @@ async def lifespan(app: FastAPI):
 
     embed_dim = len(embed_model.get_text_embedding("dimension probe"))
 
-    # Separate documents embedder (SEARCH_SPEC constraint 1/3). Its failure
-    # (model absent + download impossible) must NOT stop the service: memory
-    # search keeps working, document search returns an explicit 503 instead
-    # of silently falling back to a different vector space.
-    doc_embed_model, doc_embed_error = embed_model, ""
-    if config.DOC_EMBED_MODEL:
-        try:
-            doc_embed_model = providers.build_doc_embed_model(embed_model)
-        except Exception as exc:  # noqa: BLE001 — any load/download failure
-            doc_embed_model, doc_embed_error = None, str(exc)
-
-    doc_embed_dim = None
-    if doc_embed_model is not None and doc_embed_model is not embed_model:
-        try:
-            doc_embed_dim = len(doc_embed_model.get_text_embedding("dimension probe"))
-        except Exception as exc:  # noqa: BLE001
-            doc_embed_model, doc_embed_error = None, str(exc)
-
     qdrant_client = QdrantClient(url=config.QDRANT_URL)
-    qdrant_setup.ensure_all(qdrant_client, embed_dim, doc_embed_dim=doc_embed_dim)
+    # Doc embedder (SEARCH_SPEC constraint 1/3) can be a heavy in-process
+    # model (e.g. BAAI/bge-m3 via sentence-transformers, CPU-only load takes
+    # minutes) — building it here would block the whole app, including
+    # /health, until it's done. Boot with memory search only; the doc
+    # embedder loads in the background below and document endpoints 503
+    # with doc_embed_error until state["doc_embed_model"] is set.
+    qdrant_setup.ensure_all(qdrant_client, embed_dim, doc_embed_dim=None)
     Path(config.DOCUMENTS_DIR).mkdir(parents=True, exist_ok=True)
-
-    index = None
-    if doc_embed_model is not None:
-        vector_store = QdrantVectorStore(
-            client=qdrant_client, collection_name=config.DOCUMENTS_COLLECTION
-        )
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        index = VectorStoreIndex.from_vector_store(
-            vector_store=vector_store, storage_context=storage_context,
-            embed_model=doc_embed_model,
-        )
 
     state.update(
         qdrant_client=qdrant_client,
-        index=index,
+        index=None,
         embed_model=embed_model,
-        doc_embed_model=doc_embed_model,
-        doc_embed_error=doc_embed_error,
+        doc_embed_model=None,
+        doc_embed_error="doc embedder loading",
         llm=llm,
         embed_dim=embed_dim,
-        doc_embed_dim=doc_embed_dim if doc_embed_dim is not None else embed_dim,
+        doc_embed_dim=embed_dim,
     )
 
+    async def _load_doc_embedder() -> None:
+        # Same logic the old synchronous startup ran, just off the request
+        # path. Any failure here (model absent, download impossible, or a
+        # doc-space mismatch from qdrant_setup) must NOT stop the service:
+        # memory search keeps working, document search returns an explicit
+        # 503 instead of silently falling back to a different vector space.
+        doc_embed_model, doc_embed_error = embed_model, ""
+        if config.DOC_EMBED_MODEL:
+            try:
+                doc_embed_model = await asyncio.to_thread(
+                    providers.build_doc_embed_model, embed_model
+                )
+            except Exception as exc:  # noqa: BLE001 — any load/download failure
+                doc_embed_model, doc_embed_error = None, str(exc)
+
+        doc_embed_dim = None
+        if doc_embed_model is not None and doc_embed_model is not embed_model:
+            try:
+                doc_embed_dim = await asyncio.to_thread(
+                    lambda: len(doc_embed_model.get_text_embedding("dimension probe"))
+                )
+            except Exception as exc:  # noqa: BLE001
+                doc_embed_model, doc_embed_error = None, str(exc)
+
+        index = None
+        if doc_embed_model is not None:
+            try:
+                qdrant_setup.ensure_all(qdrant_client, embed_dim, doc_embed_dim=doc_embed_dim)
+                vector_store = QdrantVectorStore(
+                    client=qdrant_client, collection_name=config.DOCUMENTS_COLLECTION
+                )
+                storage_context = StorageContext.from_defaults(vector_store=vector_store)
+                index = VectorStoreIndex.from_vector_store(
+                    vector_store=vector_store, storage_context=storage_context,
+                    embed_model=doc_embed_model,
+                )
+            except Exception as exc:  # noqa: BLE001
+                doc_embed_model, doc_embed_error = None, str(exc)
+
+        if doc_embed_error:
+            logger.error("doc embedder unavailable: %s", doc_embed_error)
+
+        state.update(
+            index=index,
+            doc_embed_model=doc_embed_model,
+            doc_embed_error=doc_embed_error,
+            doc_embed_dim=doc_embed_dim if doc_embed_dim is not None else embed_dim,
+        )
+
     sweep_task = asyncio.create_task(scheduler.consolidation_loop(state))
+    doc_embed_task = asyncio.create_task(_load_doc_embedder())
 
     async with mcp.session_manager.run():
         yield
 
     sweep_task.cancel()
+    doc_embed_task.cancel()
     qdrant_client.close()
     state.clear()
 
@@ -110,6 +141,36 @@ class IngestTextRequest(BaseModel):
 class IngestResponse(BaseModel):
     status: str
     total_chunks_indexed: int
+
+
+class DeleteDocumentRequest(BaseModel):
+    project_id: str
+    document_key: str
+
+
+class DeleteDocumentResponse(BaseModel):
+    status: str
+    chunks_deleted: int
+    files_removed: int
+
+
+class DocumentSearchRequest(BaseModel):
+    query: str
+    project: str = ""
+    top_k: int = config.RECALL_TOP_K_DOCS
+
+
+class DocumentSearchHit(BaseModel):
+    text: str
+    source: str
+    project_id: str
+    document_key: str
+    score: float
+    trace: dict
+
+
+class DocumentSearchResponse(BaseModel):
+    results: list[DocumentSearchHit]
 
 
 class QueryRequest(BaseModel):
@@ -362,6 +423,7 @@ def ingest_text(payload: IngestTextRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(
             enrich.enrich_document, state["index"], state["qdrant_client"],
             payload.metadata["source"], payload.project_id or config.DEFAULT_PROJECT,
+            payload.metadata.get("document_key", ""), payload.metadata.get("stored_path", ""),
         )
     return IngestResponse(status="ok", total_chunks_indexed=total)
 
@@ -417,8 +479,44 @@ async def ingest_file(
     background_tasks.add_task(
         enrich.enrich_document, state["index"], state["qdrant_client"],
         parsed_metadata["source"], project_id,
+        parsed_metadata.get("document_key", ""), parsed_metadata["stored_path"],
     )
     return IngestResponse(status="ok", total_chunks_indexed=total)
+
+
+@app.post("/documents/delete", response_model=DeleteDocumentResponse)
+def delete_document(payload: DeleteDocumentRequest):
+    """Hard-delete every chunk (and orphaned original file) for one logical
+    document, identified by (project_id, document_key). Used by connectors
+    to clear Longbrain's own copy of a document a user un-registers — never
+    touches the source system the content came from."""
+    if not payload.project_id or not payload.document_key:
+        raise HTTPException(status_code=400, detail="project_id and document_key are required")
+    result = documents.delete_document(state["qdrant_client"], payload.project_id, payload.document_key)
+    return DeleteDocumentResponse(status="ok", **result)
+
+
+@app.post("/documents/search", response_model=DocumentSearchResponse)
+def documents_search(payload: DocumentSearchRequest):
+    """Structured document hits (text + score + trace) — for another
+    LongBrain-shaped backend to federate into its own recall(), see
+    config.CONNECTOR_SEARCH_URL / documents.federated_search_chunks().
+    Deliberately separate from /query, which stays plain list[str] for
+    backward compatibility."""
+    _require_doc_embedder()
+    if not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty")
+    hits = documents.search_chunks(
+        state["qdrant_client"], state["doc_embed_model"], payload.query,
+        project=payload.project or None, top_k=payload.top_k,
+    )
+    return DocumentSearchResponse(results=[
+        DocumentSearchHit(
+            text=h["text"], source=h["source"], project_id=h["project_id"],
+            document_key=h["document_key"], score=h["score"], trace=h["trace"],
+        )
+        for h in hits
+    ])
 
 
 def _project_filters(project: str):

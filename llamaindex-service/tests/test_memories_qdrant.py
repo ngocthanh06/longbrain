@@ -8,7 +8,7 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client import models as qmodels
 
-from app import config, memories, memory_store, qdrant_setup
+from app import config, documents, memories, memory_store, qdrant_setup
 from tests.conftest import FakeEmbed, FakeLLM
 
 DIM = 2
@@ -1191,6 +1191,121 @@ def test_recall_docs_hard_filtered_by_project(client):
     r = memories.recall(client, embed, "tài liệu spec về slot?",
                         project="proj-a", recent_turns=0)
     assert r["documents"] == []  # proj-b's doc must not cross into proj-a
+
+
+def test_recall_docs_scope_global_bypasses_project_filter(client):
+    """Same contract as scope_policy.filter_projects() already gives
+    memories/history: "global" means search everything, not silently stay
+    hard-filtered — a connector's project_id (freely chosen when a source
+    is registered) has no inherent relationship to whatever project the
+    caller's own session infers."""
+    embed = FakeEmbed()
+    _seed_doc_chunk(client, "Booking slots every 15 minutes.",
+                    "booking-spec.md", "proj-b", [1.0, 0.0])
+    r = memories.recall(client, embed, "tài liệu spec về slot?",
+                        project="proj-a", project_scope="global", recent_turns=0)
+    assert r["documents"][0]["source"] == "booking-spec.md"
+
+
+def test_recall_docs_scope_boost_bypasses_project_filter(client):
+    embed = FakeEmbed()
+    _seed_doc_chunk(client, "Booking slots every 15 minutes.",
+                    "booking-spec.md", "proj-b", [1.0, 0.0])
+    r = memories.recall(client, embed, "tài liệu spec về slot?",
+                        project="proj-a", project_scope="boost", recent_turns=0)
+    assert r["documents"][0]["source"] == "booking-spec.md"
+
+
+def test_recall_docs_scope_strict_is_unaffected_by_the_fix(client):
+    """Default scope must keep the exact pre-fix behavior — no accidental
+    cross-project exposure for the common case."""
+    embed = FakeEmbed()
+    _seed_doc_chunk(client, "Booking slots every 15 minutes.",
+                    "booking-spec.md", "proj-b", [1.0, 0.0])
+    r = memories.recall(client, embed, "tài liệu spec về slot?",
+                        project="proj-a", project_scope="strict", recent_turns=0)
+    assert r["documents"] == []
+
+
+# ---------------------------------------------------------------------------
+# Connector Layer federation (config.CONNECTOR_SEARCH_URL /
+# documents.federated_search_chunks) — merged into the docs channel only,
+# fail-open, never called when the docs channel itself isn't triggered.
+# ---------------------------------------------------------------------------
+def test_recall_merges_federated_docs_when_docs_channel_triggered(client, monkeypatch):
+    embed = FakeEmbed()
+    _seed_doc_chunk(client, "Local KB content.", "local.md", "proj-a", [1.0, 0.0])
+    monkeypatch.setattr(
+        documents, "federated_search_chunks",
+        lambda query, project=None, top_k=config.RECALL_TOP_K_DOCS: [
+            {"text": "Connector doc content.", "source": "drive-doc.md",
+             "project_id": "proj-a", "document_key": "abc123", "score": 0.99,
+             "trace": {}, "origin": "connector-layer"},
+        ],
+    )
+    r = memories.recall(client, embed, "tài liệu spec nói gì về upload?",
+                        project="proj-a", recent_turns=0)
+    sources = [d["source"] for d in r["documents"]]
+    assert "drive-doc.md" in sources
+    assert "Connector doc content." in r["context_block"]
+
+
+def test_recall_federated_search_gets_no_project_filter_for_global_scope(client, monkeypatch):
+    """A connector's project_id is an arbitrary label chosen at registration
+    time — unrelated to whatever project the caller's own session infers.
+    global/boost scope must search the connector backend unfiltered too,
+    not just the local collection."""
+    embed = FakeEmbed()
+    captured = {}
+    monkeypatch.setattr(
+        documents, "federated_search_chunks",
+        lambda query, project=None, top_k=config.RECALL_TOP_K_DOCS:
+            captured.update(project=project) or [],
+    )
+    memories.recall(client, embed, "tài liệu spec nói gì về upload?",
+                    project="proj-a", project_scope="global", recent_turns=0)
+    assert captured["project"] is None
+
+
+def test_recall_does_not_call_federated_search_when_docs_not_triggered(client, monkeypatch):
+    embed = FakeEmbed()
+    calls = []
+    monkeypatch.setattr(
+        documents, "federated_search_chunks",
+        lambda query, project=None, top_k=config.RECALL_TOP_K_DOCS: calls.append(1) or [],
+    )
+    r = memories.recall(client, embed, "upload đang lỗi gì?", project="proj-a", recent_turns=0)
+    assert r["routing"]["docs"] is False
+    assert calls == []  # federated search must not fire when docs channel is off
+
+
+def test_recall_federated_docs_merged_by_score_and_capped(client, monkeypatch):
+    """Local + federated hits merge into one ranked, capped list — not
+    federated-always-first or local-always-first."""
+    query = "tài liệu spec nói gì?"
+    # Precise cosine similarity via an explicit query vector: [0.7071, 0.7071]
+    # (45 degrees off the query) scores ~0.71 — between the two federated
+    # scores below, so this test actually exercises interleaved ranking
+    # instead of one source trivially dominating (FakeEmbed's [1,0] default
+    # would otherwise tie with a same-vector doc at 1.0 every time).
+    embed = FakeEmbed({query: [1.0, 0.0]})
+    _seed_doc_chunk(client, "Mid score local content.", "local-mid.md", "proj-a",
+                    [0.7071, 0.7071])
+    monkeypatch.setattr(
+        documents, "federated_search_chunks",
+        lambda q, project=None, top_k=config.RECALL_TOP_K_DOCS: [
+            {"text": "High score connector content.", "source": "connector-high.md",
+             "project_id": "proj-a", "document_key": "k1", "score": 0.95, "trace": {}},
+            {"text": "Low score connector content.", "source": "connector-low.md",
+             "project_id": "proj-a", "document_key": "k2", "score": 0.10, "trace": {}},
+        ],
+    )
+    r = memories.recall(client, embed, query, project="proj-a", recent_turns=0)
+    assert len(r["documents"]) <= config.RECALL_TOP_K_DOCS
+    sources = [d["source"] for d in r["documents"]]
+    assert sources[0] == "connector-high.md"  # highest score first
+    assert "local-mid.md" in sources           # beats the lowest federated score
+    assert "connector-low.md" not in sources   # dropped by the RECALL_TOP_K_DOCS cap
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import shutil
 import time
 from pathlib import Path
 
+import requests
 from llama_index.core import Document, SimpleDirectoryReader, VectorStoreIndex
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -235,6 +236,61 @@ def tag_existing_version(
     return len(points)
 
 
+def delete_document(qdrant_client: QdrantClient, project_id: str, document_key: str) -> dict:
+    """Hard-delete every chunk (active AND superseded) for exactly this
+    (project_id, document_key) pair — unlike _supersede_previous_versions,
+    which only marks old chunks hidden, this actually removes them from
+    Qdrant. Also removes the original file copy under DOCUMENTS_DIR for any
+    stored_path no longer referenced by any remaining chunk (in any project
+    or under any other document_key), so a shared/duplicate upload isn't
+    deleted out from under a still-live document.
+
+    Never touches the source system the content came from (e.g. Google
+    Drive) — this only clears Longbrain's own copy of the data."""
+    if not (project_id and document_key):
+        return {"chunks_deleted": 0, "files_removed": 0}
+    must = [
+        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
+        qmodels.FieldCondition(key="document_key", match=qmodels.MatchValue(value=document_key)),
+    ]
+    points = []
+    offset = None
+    while True:
+        batch, offset = qdrant_client.scroll(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            scroll_filter=qmodels.Filter(must=must),
+            limit=256, offset=offset, with_payload=["stored_path"], with_vectors=False,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+    if not points:
+        return {"chunks_deleted": 0, "files_removed": 0}
+
+    stored_paths = {p.payload.get("stored_path") for p in points if p.payload.get("stored_path")}
+    qdrant_client.delete(
+        collection_name=config.DOCUMENTS_COLLECTION,
+        points_selector=qmodels.PointIdsList(points=[p.id for p in points]),
+    )
+
+    files_removed = 0
+    for stored_path in stored_paths:
+        still_referenced = qdrant_client.count(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            count_filter=qmodels.Filter(must=[
+                qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)),
+            ]),
+            exact=True,
+        ).count
+        if still_referenced == 0:
+            try:
+                Path(stored_path).unlink(missing_ok=True)
+                files_removed += 1
+            except OSError:
+                pass
+    return {"chunks_deleted": len(points), "files_removed": files_removed}
+
+
 def ingest_file(
     index: VectorStoreIndex,
     qdrant_client: QdrantClient,
@@ -355,3 +411,35 @@ def search_chunks(
         })
     results.sort(key=lambda r: r["score"], reverse=True)
     return results[:top_k]
+
+
+def federated_search_chunks(
+    query: str,
+    project: str | None = None,
+    top_k: int = config.RECALL_TOP_K_DOCS,
+) -> list[dict]:
+    """Document hits from Connector Layer's own backend (see
+    config.CONNECTOR_SEARCH_URL) via its /documents/search endpoint, tagged
+    origin="connector-layer" so a reader can tell them apart from LongBrain's
+    own KB. Disabled (returns []) when CONNECTOR_SEARCH_URL is unset, and on
+    ANY failure/timeout — this must never fail or stall recall() (same
+    fail-open shape as app/enrich.py's llm_available()). Deliberately an
+    HTTP call, not a direct Qdrant query against connector_layer_documents:
+    the connector backend owns its own embedder/collection/schema and may
+    diverge from LongBrain's own at any point, so LongBrain must go through
+    its search API rather than assume a shared vector space."""
+    if not config.CONNECTOR_SEARCH_URL:
+        return []
+    try:
+        resp = requests.post(
+            f"{config.CONNECTOR_SEARCH_URL}/documents/search",
+            json={"query": query, "project": project or "", "top_k": top_k},
+            timeout=config.CONNECTOR_SEARCH_TIMEOUT_MS / 1000.0,
+        )
+        resp.raise_for_status()
+        hits = resp.json().get("results", [])
+    except Exception:  # noqa: BLE001 — unreachable/slow/malformed = no federated results
+        return []
+    for hit in hits:
+        hit["origin"] = "connector-layer"
+    return hits

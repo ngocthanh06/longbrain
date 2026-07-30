@@ -76,3 +76,41 @@ def test_record_doc_space_unblocks_normal_boot(client, monkeypatch):
     assert meta["doc_embed_provider"] == "huggingface"
     assert meta["doc_embed_model"] == "bge-test"
     assert meta["doc_embed_dim"] == DOC_DIM
+
+
+# ---------------------------------------------------------------------------
+# PROVISION_MEMORY_COLLECTIONS — documents-only deployments (e.g. Connector
+# Layer's own backend) skip chat_history/memories entirely.
+# ---------------------------------------------------------------------------
+def test_provision_memory_collections_false_skips_chat_and_memories(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_PROVIDER", "fastembed")
+    monkeypatch.setattr(config, "EMBED_MODEL", "mini-test")
+    monkeypatch.setattr(config, "DOC_EMBED_PROVIDER", "")
+    monkeypatch.setattr(config, "DOC_EMBED_MODEL", "")
+    monkeypatch.setattr(config, "PROVISION_MEMORY_COLLECTIONS", False)
+    c = QdrantClient(":memory:")
+
+    qdrant_setup.ensure_all(c, DIM)
+
+    existing = qdrant_setup._existing_collections(c)
+    assert config.CHAT_HISTORY_COLLECTION not in existing
+    assert config.MEMORIES_COLLECTION not in existing
+    assert config.DOCUMENTS_COLLECTION in existing  # still provisioned
+    assert config.META_COLLECTION in existing        # still provisioned
+    c.close()
+
+
+def test_provision_memory_collections_true_still_creates_them(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_PROVIDER", "fastembed")
+    monkeypatch.setattr(config, "EMBED_MODEL", "mini-test")
+    monkeypatch.setattr(config, "DOC_EMBED_PROVIDER", "")
+    monkeypatch.setattr(config, "DOC_EMBED_MODEL", "")
+    monkeypatch.setattr(config, "PROVISION_MEMORY_COLLECTIONS", True)
+    c = QdrantClient(":memory:")
+
+    qdrant_setup.ensure_all(c, DIM)
+
+    existing = qdrant_setup._existing_collections(c)
+    assert config.CHAT_HISTORY_COLLECTION in existing
+    assert config.MEMORIES_COLLECTION in existing
+    c.close()

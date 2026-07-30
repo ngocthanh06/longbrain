@@ -1145,11 +1145,34 @@ def recall(
     from app.runtime import state as _runtime_state
 
     doc_embed = _runtime_state.get("doc_embed_model", embed_model)
+    # Same scope contract as memories/history (scope_policy.filter_projects):
+    # "strict" hard-filters to the caller's own project; "boost"/"global" (or
+    # no resolved project at all) search everything instead of silently
+    # missing a document registered under a project the caller's session
+    # doesn't happen to be scoped to — a connector's project_id (chosen
+    # freely when a source is registered) has no inherent relationship to
+    # whatever project a chat session infers from its own cwd.
+    docs_project = (
+        project
+        if scope_policy.filter_projects(project or None, project_scope, config.DEFAULT_PROJECT)
+        else None
+    )
     docs = (
-        documents.search_chunks(client, doc_embed, query, project or None)
+        documents.search_chunks(client, doc_embed, query, docs_project)
         if routing["docs"] and doc_embed is not None
         else []
     )
+    # Connector Layer federation (config.CONNECTOR_SEARCH_URL): merged in
+    # only when the docs channel is actually needed, independent of whether
+    # the LOCAL doc embedder loaded — the connector backend has its own.
+    # federated_search_chunks() is itself a no-op/fail-open when unset or
+    # unreachable, so this never adds latency/risk to a recall that doesn't
+    # need it and never blocks one that does.
+    if routing["docs"]:
+        federated_docs = documents.federated_search_chunks(query, docs_project)
+        if federated_docs:
+            docs = sorted(docs + federated_docs, key=lambda d: d["score"], reverse=True)
+            docs = docs[:config.RECALL_TOP_K_DOCS]
 
     # A matched session with a distilled summary is shown AS the summary
     # (coherent, token-cheap); raw 300-char snippets only remain for sessions

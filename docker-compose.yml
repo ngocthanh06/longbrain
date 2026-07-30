@@ -43,6 +43,18 @@ services:
       # scripts/migrate_doc_embed.py.
       DOC_EMBED_PROVIDER: "${DOC_EMBED_PROVIDER:-}"
       DOC_EMBED_MODEL: "${DOC_EMBED_MODEL:-}"
+      # Connector Layer federation: merged into recall()'s docs channel,
+      # fail-open. Empty by default — not everyone runs Connector Layer's
+      # own compose project (connectors/google_drive/docker-compose.yml).
+      # If you do, set this in .env: CONNECTOR_SEARCH_URL=http://host.docker.internal:8801
+      # (host-published port — the two compose projects don't share a
+      # Docker network, so an internal service hostname won't resolve).
+      CONNECTOR_SEARCH_URL: "${CONNECTOR_SEARCH_URL:-}"
+      # Measured real latency (BGE-M3 query embedding on CPU): ~190-430ms —
+      # 250ms silently failed nearly every call. 800ms leaves margin for a
+      # cold request without meaningfully slowing a recall that already only
+      # pays this cost when the docs channel triggers.
+      CONNECTOR_SEARCH_TIMEOUT_MS: "${CONNECTOR_SEARCH_TIMEOUT_MS:-800}"
       DOC_RERANK: "${DOC_RERANK:-false}"
       DOC_RERANK_MODEL: "${DOC_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
       DOC_RERANK_CANDIDATES: "${DOC_RERANK_CANDIDATES:-20}"
@@ -102,6 +114,14 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+
+  # Connector Layer's own backend now lives in its own compose project:
+  # connectors/google_drive/docker-compose.yml — a separate product from
+  # LongBrain itself (same relationship as Thaloca), started and run
+  # independently of this file. It still shares this Qdrant instance (via
+  # the host-published port, not an internal Docker network — the two
+  # compose projects are unrelated) for convenience, but owns its own
+  # collections/volume outright.
 
   # Optional local LLM — only started with: docker compose --profile ollama up -d
   # Then set LLM_PROVIDER=ollama and OLLAMA_BASE_URL=http://ollama:11434 in .env.

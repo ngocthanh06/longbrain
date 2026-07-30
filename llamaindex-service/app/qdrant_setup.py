@@ -169,24 +169,25 @@ def ensure_all(
     keyword = qmodels.PayloadSchemaType.KEYWORD
     ts = qmodels.PayloadSchemaType.FLOAT
 
-    _ensure_collection(client, config.CHAT_HISTORY_COLLECTION, embed_dim)
-    _ensure_indexes(
-        client,
-        config.CHAT_HISTORY_COLLECTION,
-        {"user_id": keyword, "session_id": keyword, "role": keyword,
-         "project_id": keyword, "timestamp": ts,
-         "consolidated": qmodels.PayloadSchemaType.BOOL},
-    )
+    if config.PROVISION_MEMORY_COLLECTIONS:
+        _ensure_collection(client, config.CHAT_HISTORY_COLLECTION, embed_dim)
+        _ensure_indexes(
+            client,
+            config.CHAT_HISTORY_COLLECTION,
+            {"user_id": keyword, "session_id": keyword, "role": keyword,
+             "project_id": keyword, "timestamp": ts,
+             "consolidated": qmodels.PayloadSchemaType.BOOL},
+        )
 
-    _ensure_collection(client, config.MEMORIES_COLLECTION, embed_dim)
-    _ensure_indexes(
-        client,
-        config.MEMORIES_COLLECTION,
-        {"user_id": keyword, "session_id": keyword, "type": keyword,
-         "project_id": keyword, "created_at": ts, "last_seen": ts,
-         "superseded_by": keyword, "status": keyword,
-         "triple_subject": keyword, "triple_relation": keyword},
-    )
+        _ensure_collection(client, config.MEMORIES_COLLECTION, embed_dim)
+        _ensure_indexes(
+            client,
+            config.MEMORIES_COLLECTION,
+            {"user_id": keyword, "session_id": keyword, "type": keyword,
+             "project_id": keyword, "created_at": ts, "last_seen": ts,
+             "superseded_by": keyword, "status": keyword,
+             "triple_subject": keyword, "triple_relation": keyword},
+        )
 
     # The documents collection is created here too (LlamaIndex's
     # QdrantVectorStore would otherwise create it on first insert WITHOUT the

@@ -55,20 +55,22 @@ MARKER_END_LEGACY = "<!-- hermes-agent:memory-priority:end -->"
 CLAUDE_MD_BLOCK = f"""{MARKER_START}
 ## Long-term memory (Longbrain) — shared across agents
 
-**Recall (read):** When the user refers to content from a previous
-conversation or session that is not in your current context (e.g. "the
-review from earlier", "as we discussed last time", "give me that again"),
-do NOT declare the context lost or redo the work from scratch. FIRST call
-`mcp__longbrain__search_history` (and `mcp__longbrain__memory_recall`
-for distilled facts) to retrieve it. The memory service stores past turns
-from ALL connected agents (Claude Code, Hermes Desktop, …), so the answer
-may exist even when this session has no trace of it. Likewise, when the
-user asks about a project document or spec (anything that could live in a
-`docs/` folder), call `mcp__longbrain__search_knowledge_base` before
-saying the document is unknown — project `docs/` folders are auto-ingested
-into the shared knowledge base. Only fall back to reconstructing from
-code/files when the memory search returns nothing relevant — and say that
-the search came up empty.
+**Recall (read) — ALWAYS, before answering or editing:** Before answering
+any non-trivial question about a project, and before making any code
+change, call `mcp__longbrain__search_history` and
+`mcp__longbrain__memory_recall` first — do not wait for the user to
+reference the past explicitly (e.g. "the review from earlier", "as we
+discussed last time"). Checking only when the user hints at prior context
+misses decisions, specs, or constraints the user never restates, which is
+what leads to edits that contradict earlier agreed-upon direction. The
+memory service stores past turns from ALL connected agents (Claude Code,
+Hermes Desktop, …), so relevant context may exist even when this session
+has no trace of it. Likewise, before saying a project document or spec is
+unknown (anything that could live in a `docs/` folder), call
+`mcp__longbrain__search_knowledge_base` — project `docs/` folders are
+auto-ingested into the shared knowledge base. Only fall back to
+reconstructing from code/files when the memory search returns nothing
+relevant — and say that the search came up empty.
 
 **Save (write):** When you decide on your own to save long-term memory (a
 fact, decision, or preference worth keeping), prefer calling the

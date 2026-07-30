@@ -214,3 +214,137 @@ def test_same_basename_different_document_keys_do_not_supersede(client):
               client.retrieve(collection_name=config.DOCUMENTS_COLLECTION, ids=[1, 2])}
     assert "superseded_by" not in by_id[1]
     assert by_id[2]["superseded_by"] == "/data/documents/new-frontend.md"
+
+
+# ---------------------------------------------------------------------------
+# federated_search_chunks: Connector Layer federation (config.CONNECTOR_SEARCH_URL)
+# ---------------------------------------------------------------------------
+def test_federated_search_chunks_disabled_when_url_unset(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_SEARCH_URL", "")
+    assert documents.federated_search_chunks("query") == []
+
+
+def test_federated_search_chunks_tags_origin_and_forwards_params(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_SEARCH_URL", "http://localhost:8801")
+    monkeypatch.setattr(config, "CONNECTOR_SEARCH_TIMEOUT_MS", 250)
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": [
+                {"text": "doc text", "source": "drive-doc.md", "project_id": "erp",
+                 "document_key": "abc123", "score": 0.8, "trace": {}},
+            ]}
+
+    def fake_post(url, json, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(documents.requests, "post", fake_post)
+
+    results = documents.federated_search_chunks("query text", project="erp", top_k=3)
+
+    assert captured["url"] == "http://localhost:8801/documents/search"
+    assert captured["json"] == {"query": "query text", "project": "erp", "top_k": 3}
+    assert captured["timeout"] == pytest.approx(0.25)
+    assert results == [
+        {"text": "doc text", "source": "drive-doc.md", "project_id": "erp",
+         "document_key": "abc123", "score": 0.8, "trace": {}, "origin": "connector-layer"},
+    ]
+
+
+def test_federated_search_chunks_fails_open_on_error(monkeypatch):
+    monkeypatch.setattr(config, "CONNECTOR_SEARCH_URL", "http://localhost:8801")
+
+    def raise_error(url, json, timeout):
+        raise TimeoutError("connector backend unreachable")
+
+    monkeypatch.setattr(documents.requests, "post", raise_error)
+
+    assert documents.federated_search_chunks("query") == []
+
+
+def test_delete_document_removes_active_and_superseded_chunks(client, tmp_path):
+    _create_collection(client)
+    old_file = tmp_path / "aaa_faq.md"
+    new_file = tmp_path / "bbb_faq.md"
+    old_file.write_text("old")
+    new_file.write_text("new")
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(old_file), "superseded_by": str(new_file),
+    })
+    _upsert_point(client, 2, {
+        "project_id": "erp", "document_key": "faq.md", "stored_path": str(new_file),
+    })
+
+    result = documents.delete_document(client, "erp", "faq.md")
+
+    assert result == {"chunks_deleted": 2, "files_removed": 2}
+    remaining, _ = client.scroll(collection_name=config.DOCUMENTS_COLLECTION, limit=10)
+    assert remaining == []
+    assert not old_file.exists()
+    assert not new_file.exists()
+
+
+def test_delete_document_ignores_other_project_and_document_key(client, tmp_path):
+    _create_collection(client)
+    keep_file = tmp_path / "other.md"
+    keep_file.write_text("keep")
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(tmp_path / "target.md"),
+    })
+    _upsert_point(client, 2, {
+        "project_id": "erp", "document_key": "other.md", "stored_path": str(keep_file),
+    })
+    _upsert_point(client, 3, {
+        "project_id": "other_project", "document_key": "faq.md",
+        "stored_path": str(tmp_path / "target.md"),
+    })
+
+    result = documents.delete_document(client, "erp", "faq.md")
+
+    assert result == {"chunks_deleted": 1, "files_removed": 0}
+    remaining, _ = client.scroll(collection_name=config.DOCUMENTS_COLLECTION, limit=10)
+    assert {p.id for p in remaining} == {2, 3}
+    assert keep_file.exists()
+
+
+def test_delete_document_keeps_file_still_referenced_by_another_document(client, tmp_path):
+    """Two document_keys sharing one content-addressed stored_path (a
+    duplicate upload) must not have their shared file deleted while either
+    document still references it."""
+    _create_collection(client)
+    shared_file = tmp_path / "shared.md"
+    shared_file.write_text("shared")
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "doc-a", "stored_path": str(shared_file),
+    })
+    _upsert_point(client, 2, {
+        "project_id": "erp", "document_key": "doc-b", "stored_path": str(shared_file),
+    })
+
+    result = documents.delete_document(client, "erp", "doc-a")
+
+    assert result == {"chunks_deleted": 1, "files_removed": 0}
+    assert shared_file.exists()
+
+
+def test_delete_document_no_match_returns_zero(client):
+    _create_collection(client)
+    _upsert_point(client, 1, {"project_id": "erp", "document_key": "faq.md", "stored_path": "/x"})
+
+    result = documents.delete_document(client, "erp", "does-not-exist")
+
+    assert result == {"chunks_deleted": 0, "files_removed": 0}
+
+
+def test_delete_document_requires_project_id_and_document_key(client):
+    assert documents.delete_document(client, "", "faq.md") == {"chunks_deleted": 0, "files_removed": 0}
+    assert documents.delete_document(client, "erp", "") == {"chunks_deleted": 0, "files_removed": 0}

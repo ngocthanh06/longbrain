@@ -54,13 +54,25 @@ def _complete(prompt: str) -> str:
     return (resp.json().get("response") or "").strip()
 
 
-def _doc_text(qdrant_client, source: str, project_id: str, max_chars: int = 8000) -> str:
+def _doc_text(
+    qdrant_client, project_id: str, source: str,
+    document_key: str = "", stored_path: str = "", max_chars: int = 8000,
+) -> str:
     """Concatenated chunk text of one document (works for any ingested file
-    type — the parsed text already lives in the chunks)."""
-    must = [
-        qmodels.FieldCondition(key="source", match=qmodels.MatchValue(value=source)),
-        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
-    ]
+    type — the parsed text already lives in the chunks).
+
+    Scoped to the EXACT version (document_key + stored_path) when both are
+    known — not just `source` — so a document that changed content doesn't
+    get summarized from a mix of its old and new chunks (old chunks are
+    superseded, not deleted, and can share the same `source`). Falls back to
+    the coarser source+project_id scope only for content with no version
+    identity at all (manually added text via add_to_knowledge_base)."""
+    must = [qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id))]
+    if document_key and stored_path:
+        must.append(qmodels.FieldCondition(key="document_key", match=qmodels.MatchValue(value=document_key)))
+        must.append(qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)))
+    else:
+        must.append(qmodels.FieldCondition(key="source", match=qmodels.MatchValue(value=source)))
     parts, offset = [], None
     while sum(len(p) for p in parts) < max_chars:
         points, offset = qdrant_client.scroll(
@@ -82,28 +94,69 @@ def _doc_text(qdrant_client, source: str, project_id: str, max_chars: int = 8000
     return "\n".join(parts)[:max_chars]
 
 
-def already_enriched(qdrant_client, source: str, project_id: str) -> bool:
+def already_enriched(
+    qdrant_client, project_id: str, source: str,
+    document_key: str = "", stored_path: str = "",
+) -> bool:
+    """Does an active summary chunk already exist for this EXACT version?
+
+    document_key + stored_path (when both are known) identify one specific
+    version snapshot — checking only `source` (the old behavior) would keep
+    matching a stale v1 summary forever after the real document changed to
+    v2, since `source` (the display name/title) does not change across
+    versions."""
+    must = [
+        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
+        qmodels.FieldCondition(key="enriched", match=qmodels.MatchValue(value=True)),
+    ]
+    if document_key and stored_path:
+        must.append(qmodels.FieldCondition(key="document_key", match=qmodels.MatchValue(value=document_key)))
+        must.append(qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)))
+    else:
+        must.append(qmodels.FieldCondition(key="source", match=qmodels.MatchValue(value=source)))
+    points, _ = qdrant_client.scroll(
+        collection_name=config.DOCUMENTS_COLLECTION,
+        scroll_filter=qmodels.Filter(must=must),
+        limit=1, with_payload=False, with_vectors=False,
+    )
+    return bool(points)
+
+
+def _version_is_current(qdrant_client, project_id: str, document_key: str, stored_path: str) -> bool:
+    """True if stored_path is still the active (non-superseded) version for
+    this document_key. Race guard: enrichment runs as a slow background LLM
+    call, so a v1 summary can finish well AFTER v2 has already been ingested
+    and superseded v1's real content — ingest_file()'s own supersede pass
+    runs once, synchronously, at ingest time, so it cannot retroactively
+    catch a summary chunk that doesn't exist yet. Re-checking right before
+    writing catches it instead."""
     points, _ = qdrant_client.scroll(
         collection_name=config.DOCUMENTS_COLLECTION,
         scroll_filter=qmodels.Filter(must=[
-            qmodels.FieldCondition(key="source", match=qmodels.MatchValue(value=source)),
             qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
-            qmodels.FieldCondition(key="enriched", match=qmodels.MatchValue(value=True)),
+            qmodels.FieldCondition(key="document_key", match=qmodels.MatchValue(value=document_key)),
+            qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")),
         ]),
         limit=1, with_payload=False, with_vectors=False,
     )
     return bool(points)
 
 
-def enrich_document(index, qdrant_client, source: str, project_id: str) -> bool:
-    """Generate the summary chunk for one document. Returns True when a
-    chunk was written. Safe to call unconditionally: silently a no-op when
-    the LLM is unavailable, enrichment is disabled, or the doc is done."""
+def enrich_document(
+    index, qdrant_client, source: str, project_id: str,
+    document_key: str = "", stored_path: str = "",
+) -> bool:
+    """Generate the summary chunk for one document version. Returns True
+    when a chunk was written. Safe to call unconditionally: silently a
+    no-op when the LLM is unavailable, enrichment is disabled, the doc is
+    already enriched, or (document_key+stored_path given) a newer version
+    was ingested before this background call finished."""
     if not (config.DOC_ENRICH and llm_available()):
         return False
-    if already_enriched(qdrant_client, source, project_id):
+    if already_enriched(qdrant_client, project_id, source, document_key, stored_path):
         return False
-    text = _doc_text(qdrant_client, source, project_id)
+    text = _doc_text(qdrant_client, project_id, source, document_key, stored_path)
     if not text.strip():
         return False
     try:
@@ -120,12 +173,23 @@ def enrich_document(index, qdrant_client, source: str, project_id: str) -> bool:
         return False
     if not summary:
         return False
+    if document_key and stored_path and not _version_is_current(qdrant_client, project_id, document_key, stored_path):
+        logger.info(
+            "enrich: skipped stale summary for %s (%s) — a newer version "
+            "was ingested before this completed", source, project_id,
+        )
+        return False
     from app import documents
 
+    metadata = {"source": source, "enriched": True}
+    if document_key:
+        metadata["document_key"] = document_key
+    if stored_path:
+        metadata["stored_path"] = stored_path
     documents.ingest_text(
         index, qdrant_client,
         f"[Tóm tắt tài liệu {source}]\n{summary}",
-        metadata={"source": source, "enriched": True},
+        metadata=metadata,
         project_id=project_id,
     )
     logger.info("enrich: summary chunk written for %s (%s)", source, project_id)
