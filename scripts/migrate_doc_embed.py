@@ -28,6 +28,12 @@ requirements and DOC_EMBED_* is set in .env:
   docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/llamaindex-service \\
       llamaindex python /repo/scripts/migrate_doc_embed.py
   docker compose up -d llamaindex
+
+--check (used by setup.sh): only report whether .env's DOC_EMBED_* still
+matches what's on disk — exit 0 when clean (or nothing configured yet, or
+Qdrant unreachable), exit 2 when a re-embed is needed. Does not load the doc
+embedder, so it's safe to run while llamaindex is crash-looping on the same
+mismatch (qdrant is a separate compose service).
 """
 
 import gzip
@@ -46,7 +52,42 @@ BACKUP_ROOT = Path("/repo/backups")
 BATCH = 16
 
 
+def check_mismatch() -> int:
+    """Exit 2 when the on-disk doc-embed space (recorded in longbrain_meta)
+    no longer matches config.DOC_EMBED_* — the same comparison
+    qdrant_setup.ensure_all's boot guard makes, but read-only and without
+    loading the embedder. Never blocks setup: nothing configured, no meta
+    yet, or Qdrant unreachable all return 0."""
+    if not config.DOC_EMBED_MODEL:
+        return 0
+    try:
+        client = QdrantClient(url=config.QDRANT_URL)
+        meta = qdrant_setup.get_meta(client)
+    except Exception as exc:
+        print(f"  could not reach Qdrant ({exc}) — skipping the check")
+        return 0
+    stored_model = meta.get("doc_embed_model") if meta else None
+    if not stored_model:
+        return 0
+    stored_provider = meta.get("doc_embed_provider")
+    doc_provider = config.DOC_EMBED_PROVIDER or config.EMBED_PROVIDER
+    if stored_model != config.DOC_EMBED_MODEL or (
+        stored_provider and stored_provider != doc_provider
+    ):
+        print(
+            f"  documents on disk were embedded with "
+            f"{stored_provider or 'unknown provider'}/{stored_model!r} "
+            f"(dim={meta.get('doc_embed_dim')}) but .env now configures "
+            f"{doc_provider!r}/{config.DOC_EMBED_MODEL!r} — a re-embed is needed"
+        )
+        return 2
+    print(f"  {config.DOC_EMBED_MODEL} matches the on-disk embedding space")
+    return 0
+
+
 def main() -> int:
+    if "--check" in sys.argv:
+        return check_mismatch()
     if not config.DOC_EMBED_MODEL:
         print("DOC_EMBED_MODEL is not set — nothing to migrate.")
         return 1

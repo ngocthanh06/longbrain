@@ -43,6 +43,38 @@ fi
 step "Starting containers (first run builds the image, takes a few minutes)"
 docker compose up -d --build
 
+# 3b. Doc-embed mismatch check: DOC_EMBED_* changed but the documents
+# collection was never re-embedded -> llamaindex crash-loops on every boot
+# (qdrant is a separate compose service, so this check works even while
+# llamaindex is stuck in that loop).
+step "Checking document-embedding compatibility"
+if ! docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/llamaindex-service \
+    llamaindex python /repo/scripts/migrate_doc_embed.py --check; then
+  echo "Documents on disk were embedded with a different model than .env now"
+  echo "configures — llamaindex will crash-loop until they're re-embedded (a"
+  echo "backup is written to backups/ first; originals are preserved)."
+  if [ -t 0 ]; then
+    read -r -p "Re-embed now? [y/N] " doc_embed_consent
+  else
+    echo "Non-interactive shell — treating as 'no'."
+    doc_embed_consent="n"
+  fi
+  case "$doc_embed_consent" in
+    [yY]*)
+      docker compose stop llamaindex
+      docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/llamaindex-service \
+          llamaindex python /repo/scripts/migrate_doc_embed.py
+      docker compose up -d llamaindex
+      ;;
+    *)
+      echo "Skipped — run later:"
+      echo "  docker compose stop llamaindex"
+      echo "  docker compose run --rm --no-deps -v \"\$PWD:/repo\" -w /repo/llamaindex-service llamaindex python /repo/scripts/migrate_doc_embed.py"
+      echo "  docker compose up -d llamaindex"
+      ;;
+  esac
+fi
+
 # 4. Wait for health
 step "Waiting for the memory service to become ready"
 for i in $(seq 1 60); do
