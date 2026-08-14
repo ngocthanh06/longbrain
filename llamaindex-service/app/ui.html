@@ -642,6 +642,10 @@
 </style>
 </head>
 <body>
+<style>
+  #documentsView{display:none;position:absolute;inset:0;z-index:6;overflow:auto;padding:22px;background:var(--surface-0)}
+  .docs-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:16px}.docs-head h2{font-size:18px}.docs-head p{color:var(--text-muted);font-size:11px;margin-top:3px}.docs-tools,.docs-path{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}.docs-tools input,.docs-tools select,.docs-path input{padding:8px 10px;color:var(--text-secondary);background:var(--surface-2);border:1px solid var(--border);border-radius:8px}.docs-tools input{flex:1;min-width:180px}.docs-path{padding:10px;border:1px solid var(--border);border-radius:9px;background:var(--surface-1)}.docs-path input:first-of-type{flex:1;min-width:260px}.docs-table{width:100%;border-collapse:collapse;font-size:11px}.docs-table th{text-align:left;color:var(--text-muted);font-size:10px;text-transform:uppercase;padding:9px;border-bottom:1px solid var(--border)}.docs-table td{padding:10px 9px;color:var(--text-secondary);border-bottom:1px solid var(--border);vertical-align:top}.docs-table td:first-child{color:var(--text-primary);font-weight:600}.docs-table small{display:block;color:var(--text-muted);font-weight:400;margin-top:3px}.docs-empty{padding:40px;text-align:center;color:var(--text-muted)}
+</style>
 <div id="appShell">
 <aside id="sidebar">
   <button class="brand" id="homeTitle" title="Reset view and fit all memories">
@@ -653,6 +657,7 @@
     <button class="nav-item active" id="viewGraph"><span class="nav-icon">✣</span><span>Atlas</span></button>
     <button class="nav-item" id="viewList"><span class="nav-icon">☷</span><span>Memories</span></button>
     <button class="nav-item" id="viewEntities" title="Entity graph built from memory triples"><span class="nav-icon">⌘</span><span>Entities</span></button>
+    <button class="nav-item" id="viewDocuments"><span class="nav-icon">▤</span><span>L4 Documents</span></button>
   </nav>
 
   <div id="chips">
@@ -713,6 +718,12 @@
 </header>
 
 <main id="stage">
+  <section id="documentsView">
+    <div class="docs-head"><div><h2>L4 Documents</h2><p>Manage indexed project documents and source paths.</p></div><button class="btn" id="docsRefresh">Refresh</button></div>
+    <div class="docs-tools"><input id="docsSearch" placeholder="Filter documents…"><select id="docsProject"><option value="">All projects</option></select><input type="file" id="docsFile" accept=".md,.txt,.json,.pdf,.docx"><input id="docsImportProject" placeholder="Project" value="local"><button class="btn" id="docsImport">Import file</button></div>
+    <div class="docs-path"><input id="docsPath" placeholder="Absolute source folder/file path visible to Docker"><input id="docsPathProject" placeholder="Project" value="local"><button class="btn" id="docsAddPath">Add path</button></div>
+    <div id="docsBody" class="docs-empty">Loading documents…</div>
+  </section>
   <canvas id="canvas_bg"></canvas>
   <canvas id="canvas"></canvas>
   <div id="loading"><strong>Loading memory map…</strong><span>Preparing projects and links.</span><button class="btn" id="retryLoad" style="display:none">Try again</button></div>
@@ -804,6 +815,9 @@
 
 <script>
 "use strict";
+// /ui uses browser Basic authentication when API auth is enabled. The browser
+// carries the authenticated same-origin credentials for these fetch() calls;
+// no API secret is embedded in this page.
 const $ = id => document.getElementById(id);
 const canvas = $("canvas"), ctx = canvas.getContext("2d");
 const canvasBg = $("canvas_bg"), ctxBg = canvasBg.getContext("2d");
@@ -2647,6 +2661,23 @@ $("healthBtn").onclick = () => {
   hl.style.display = opening ? "block" : "none";
   if (opening) renderHealth();
 };
+async function loadDocuments(){
+  const body=$("docsBody"); body.className="docs-empty"; body.textContent="Loading documents…";
+  try{
+    const r=await fetch("/documents"); if(!r.ok) throw new Error(await r.text());
+    const data=await r.json(), docs=data.documents||[], q=$("docsSearch").value.toLowerCase(), project=$("docsProject").value;
+    const projects=[...new Set(docs.map(d=>d.project_id))].sort(); const sel=$("docsProject"), old=sel.value;
+    sel.innerHTML='<option value="">All projects</option>'+projects.map(p=>`<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join(""); sel.value=projects.includes(old)?old:"";
+    const list=docs.filter(d=>(!sel.value||d.project_id===sel.value)&&(!q||`${d.display_path||""} ${d.source||""} ${d.project_id}`.toLowerCase().includes(q)));
+    if(!list.length){body.className="docs-empty";body.textContent="No documents match the current filters.";return}
+    body.className=""; body.innerHTML=`<table class="docs-table"><thead><tr><th>Document</th><th>Project</th><th>Chunks</th><th>Status</th><th>Actions</th></tr></thead><tbody>${list.map(d=>`<tr><td>${escapeHtml(d.source||d.document_key)}<small>${escapeHtml(d.display_path||`${d.project_id}/docs/${d.document_key}`)}</small></td><td>${escapeHtml(d.project_id)}</td><td>${d.active_chunks} active · ${d.superseded_chunks} old</td><td>${d.active_chunks?"Active":"Superseded"}</td><td><a class="btn" href="/documents/content?project_id=${encodeURIComponent(d.project_id)}&document_key=${encodeURIComponent(d.document_key)}" target="_blank">View</a> <button class="btn" data-doc-project="${escapeHtml(d.project_id)}" data-doc-key="${escapeHtml(d.document_key)}" data-doc-path="${escapeHtml(d.stored_path)}">Delete</button></td></tr>`).join("")}</tbody></table>`;
+    body.querySelectorAll("button[data-doc-path]").forEach(b=>b.onclick=async()=>{if(!confirm("Delete this document?"))return;const reqBody=b.dataset.docKey?{project_id:b.dataset.docProject,document_key:b.dataset.docKey}:{project_id:b.dataset.docProject,stored_path:b.dataset.docPath};const r=await fetch("/documents/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(reqBody)});if(!r.ok)toast(await r.text());else loadDocuments()});
+  }catch(e){body.className="docs-empty";body.textContent=String(e)}
+}
+$("viewDocuments").onclick=()=>{setView("viewDocuments");$("documentsView").style.display="block";$("canvas").style.display="none";$("list").style.display="none";$("panel").style.display="none";loadDocuments()};
+$("docsRefresh").onclick=loadDocuments; $("docsSearch").oninput=loadDocuments; $("docsProject").onchange=loadDocuments;
+$("docsImport").onclick=async()=>{const f=$("docsFile").files[0];if(!f)return toast("Choose a file first");const form=new FormData();form.append("file",f);form.append("project_id",$("docsImportProject").value||"local");const r=await fetch("/ingest/file",{method:"POST",body:form});if(!r.ok)toast(await r.text());else{toast("File imported");loadDocuments()}};
+$("docsAddPath").onclick=async()=>{const path=$("docsPath").value.trim();if(!path)return toast("Enter an absolute path");const r=await fetch("/documents/path",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path,project_id:$("docsPathProject").value||"local"})});if(!r.ok)toast(await r.text());else{toast("Path imported");$("docsPath").value="";loadDocuments()}};
 $("viewGraph").onclick = async () => {
   $("list").style.display = "none";
   setView("viewGraph");
@@ -2667,6 +2698,13 @@ function setView(id) {
   $("viewGraph").classList.toggle("active", id === "viewGraph");
   $("viewList").classList.toggle("active", id === "viewList");
   $("viewEntities").classList.toggle("active", id === "viewEntities");
+  $("viewDocuments").classList.toggle("active", id === "viewDocuments");
+  const docs = id === "viewDocuments";
+  $("documentsView").style.display = docs ? "block" : "none";
+  $("canvas").style.display = docs ? "none" : "";
+  $("canvas_bg").style.display = docs ? "none" : "";
+  ["zoomDock","bulkbar","legend","health","tooltip","loading","empty"].forEach(key => { const el = $(key); if (el) el.style.display = docs ? "none" : ""; });
+  $("panel").style.display = docs ? "none" : "";
 }
 $("showSuperseded").onchange = load;
 $("topicNesting").onchange = e => {

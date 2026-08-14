@@ -40,6 +40,7 @@ from admission_gate import (  # noqa: E402,F401
     MIN_PROMPT_CHARS,
     context_prefix,
 )
+from api_auth import api_key_header  # noqa: E402
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # Codex Desktop invents a scratch cwd per ad-hoc chat (no real workspace
@@ -100,7 +101,7 @@ def post_json(path: str, body: dict, timeout: float = 5.0):
     request = urllib.request.Request(
         MEMORY_BASE + path,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **api_key_header()},
         method="POST",
     )
     try:
@@ -112,8 +113,9 @@ def post_json(path: str, body: dict, timeout: float = 5.0):
 
 def get_json(path: str, timeout: float = 3.0):
     """GET from the memory service; parsed JSON, or None on any failure."""
+    request = urllib.request.Request(MEMORY_BASE + path, headers=api_key_header())
     try:
-        with urllib.request.urlopen(MEMORY_BASE + path, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.loads(resp.read())
     except Exception:
         return None  # best-effort — never break the session

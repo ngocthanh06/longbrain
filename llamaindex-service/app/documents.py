@@ -5,6 +5,7 @@ be re-embedded from source when the embedding model changes.
 """
 
 import hashlib
+import json
 import math
 import shutil
 import time
@@ -41,6 +42,138 @@ def _hide_admin_metadata(document: Document) -> None:
 def point_count(qdrant_client: QdrantClient) -> int:
     info = qdrant_client.get_collection(config.DOCUMENTS_COLLECTION)
     return info.points_count
+
+
+def list_documents(qdrant_client: QdrantClient) -> list[dict]:
+    """Return a compact document-level view of the L4 collection.
+
+    Qdrant stores one point per chunk, so the UI should not have to know how
+    to group chunks or distinguish an active version from a superseded one.
+    The grouping key prefers the connector-supplied document key and falls
+    back to the stored path for older ingests that predate document_key.
+    """
+    fields = [
+        "source", "project_id", "document_key", "stored_path",
+        "ingested_at", "superseded_by",
+    ]
+    grouped: dict[tuple[str, str], dict] = {}
+    offset = None
+    while True:
+        points, offset = qdrant_client.scroll(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            offset=offset,
+            limit=256,
+            with_payload=fields,
+            with_vectors=False,
+        )
+        for point in points:
+            payload = point.payload or {}
+            project = payload.get("project_id") or config.DEFAULT_PROJECT
+            key = payload.get("document_key") or payload.get("stored_path") or payload.get("source") or str(point.id)
+            group_key = (str(project), str(key))
+            item = grouped.setdefault(group_key, {
+                "project_id": str(project),
+                "document_key": payload.get("document_key") or "",
+                "source": payload.get("source") or "",
+                "stored_path": payload.get("stored_path") or "",
+                "display_path": "",
+                "chunks": 0,
+                "active_chunks": 0,
+                "superseded_chunks": 0,
+                "ingested_at": 0,
+            })
+            item["chunks"] += 1
+            if payload.get("superseded_by"):
+                item["superseded_chunks"] += 1
+            else:
+                item["active_chunks"] += 1
+            item["source"] = item["source"] or payload.get("source") or ""
+            item["stored_path"] = item["stored_path"] or payload.get("stored_path") or ""
+            logical_key = item["document_key"] or item["source"] or "(unnamed document)"
+            item["display_path"] = f"{item['project_id']}/docs/{logical_key}"
+            item["ingested_at"] = max(item["ingested_at"], payload.get("ingested_at") or 0)
+        if offset is None:
+            break
+    return sorted(grouped.values(), key=lambda d: d["ingested_at"], reverse=True)
+
+
+def find_stored_path(qdrant_client: QdrantClient, project_id: str, document_key: str) -> str:
+    """Find the active local copy for one logical project document."""
+    flt = qmodels.Filter(must=[
+        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
+        qmodels.FieldCondition(key="document_key", match=qmodels.MatchValue(value=document_key)),
+        qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")),
+    ])
+    points, _ = qdrant_client.scroll(
+        collection_name=config.DOCUMENTS_COLLECTION,
+        scroll_filter=flt,
+        limit=1,
+        with_payload=["stored_path"],
+        with_vectors=False,
+    )
+    return (points[0].payload or {}).get("stored_path", "") if points else ""
+
+
+def document_path(path: str) -> Path:
+    """Resolve a user-supplied path and keep file operations inside L4 storage."""
+    root = Path(config.DOCUMENTS_DIR).resolve()
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = candidate.resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ValueError("path must be inside the documents directory")
+    return candidate
+
+
+def source_path(path: str) -> Path:
+    """Resolve an absolute source path supplied by the L4 import UI.
+
+    Source files are read-only inputs. They are copied into the managed
+    documents volume before indexing; delete operations continue to use
+    ``document_path`` and therefore cannot delete the user's source folder.
+    """
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("source path must be absolute")
+    candidate = candidate.resolve()
+    if not candidate.exists():
+        raise FileNotFoundError(path)
+    return candidate
+
+
+def delete_document_path(qdrant_client: QdrantClient, project_id: str, stored_path: str) -> dict:
+    """Delete all indexed chunks and the original file for one stored path."""
+    if not project_id or not stored_path:
+        return {"chunks_deleted": 0, "files_removed": 0}
+    points, offset = [], None
+    flt = qmodels.Filter(must=[
+        qmodels.FieldCondition(key="project_id", match=qmodels.MatchValue(value=project_id)),
+        qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)),
+    ])
+    while True:
+        batch, offset = qdrant_client.scroll(
+            collection_name=config.DOCUMENTS_COLLECTION, scroll_filter=flt,
+            limit=256, offset=offset, with_payload=False, with_vectors=False,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+    if not points:
+        return {"chunks_deleted": 0, "files_removed": 0}
+    qdrant_client.delete(
+        collection_name=config.DOCUMENTS_COLLECTION,
+        points_selector=qmodels.PointIdsList(points=[p.id for p in points]),
+    )
+    files_removed = 0
+    try:
+        target = document_path(stored_path)
+        if target.exists():
+            target.unlink()
+            files_removed = 1
+    except (OSError, ValueError):
+        pass
+    return {"chunks_deleted": len(points), "files_removed": files_removed}
 
 
 def already_ingested(qdrant_client: QdrantClient, stored_path: str, project_id: str = "") -> bool:
@@ -284,11 +417,127 @@ def delete_document(qdrant_client: QdrantClient, project_id: str, document_key: 
         ).count
         if still_referenced == 0:
             try:
-                Path(stored_path).unlink(missing_ok=True)
+                document_path(stored_path).unlink(missing_ok=True)
                 files_removed += 1
-            except OSError:
+            except (OSError, ValueError):
+                # A stale Qdrant point must not make the whole delete fail
+                # just because its local copy was already removed,
+                # inaccessible, or points outside the managed documents
+                # directory.
                 pass
     return {"chunks_deleted": len(points), "files_removed": files_removed}
+
+
+def cleanup_superseded(
+    qdrant_client: QdrantClient,
+    dry_run: bool = True,
+    limit: int = 10000,
+) -> dict:
+    """Remove document chunks that are no longer the active version.
+
+    This is deliberately narrower than ``delete_document``: only file-backed
+    chunks with a non-empty ``superseded_by`` marker are eligible.  Active
+    chunks, manually-added text, enrichment chunks, and chunks without a
+    stable version marker are left alone.  Original files are removed only
+    after confirming that no remaining Qdrant point references them.
+
+    The default is a read-only plan.  ``limit`` bounds the number of chunks
+    deleted in one run, which makes the operation resumable and safer on a
+    live instance.
+    """
+    limit = max(1, min(int(limit), 100000))
+    stale = []
+    offset = None
+    stale_filter = qmodels.Filter(must_not=[
+        qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="stored_path")),
+        qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="superseded_by")),
+    ])
+    while len(stale) < limit:
+        batch_limit = min(256, limit - len(stale))
+        points, offset = qdrant_client.scroll(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            scroll_filter=stale_filter,
+            limit=batch_limit,
+            offset=offset,
+            with_payload=["stored_path", "project_id", "document_key", "superseded_by", "source", "_node_content"],
+            with_vectors=False,
+        )
+        stale.extend(points)
+        if offset is None:
+            break
+
+    paths = {p.payload.get("stored_path") for p in stale if p.payload.get("stored_path")}
+    stale_by_path = {}
+    for point in stale:
+        path = point.payload.get("stored_path")
+        if path:
+            stale_by_path[path] = stale_by_path.get(path, 0) + 1
+
+    items = []
+    for point in stale:
+        payload = point.payload or {}
+        raw_content = payload.get("_node_content")
+        try:
+            text = json.loads(raw_content).get("text", "") if raw_content else ""
+        except (TypeError, ValueError):
+            text = ""
+        path = payload.get("stored_path", "")
+        references = qdrant_client.count(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            count_filter=qmodels.Filter(must=[
+                qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=path)),
+            ]),
+            exact=True,
+        ).count if path else 0
+        items.append({
+            "id": str(point.id),
+            "project_id": payload.get("project_id", ""),
+            "document_key": payload.get("document_key", ""),
+            "source": payload.get("source", ""),
+            "stored_path": path,
+            "superseded_by": payload.get("superseded_by", ""),
+            "text_preview": " ".join(text.split())[:180],
+            "file_exists": Path(path).exists() if path else False,
+            "file_action": "remove" if references <= stale_by_path.get(path, 0) else "keep_shared",
+        })
+    result = {
+        "status": "planned" if dry_run else "cleaned",
+        "dry_run": dry_run,
+        "chunks_found": len(stale),
+        "chunks_deleted": 0,
+        "files_removed": 0,
+        "files_pending": sorted(paths),
+        "items": items,
+        "truncated": offset is not None,
+    }
+    if dry_run or not stale:
+        return result
+
+    qdrant_client.delete(
+        collection_name=config.DOCUMENTS_COLLECTION,
+        points_selector=qmodels.PointIdsList(points=[p.id for p in stale]),
+    )
+    result["chunks_deleted"] = len(stale)
+
+    for stored_path in paths:
+        still_referenced = qdrant_client.count(
+            collection_name=config.DOCUMENTS_COLLECTION,
+            count_filter=qmodels.Filter(must=[
+                qmodels.FieldCondition(key="stored_path", match=qmodels.MatchValue(value=stored_path)),
+            ]),
+            exact=True,
+        ).count
+        if still_referenced:
+            continue
+        try:
+            document_path(stored_path).unlink(missing_ok=True)
+            result["files_removed"] += 1
+        except (OSError, ValueError):
+            # A stale Qdrant point must not make the whole cleanup fail just
+            # because its local copy was already removed, inaccessible, or
+            # points outside the managed documents directory.
+            pass
+    return result
 
 
 def ingest_file(

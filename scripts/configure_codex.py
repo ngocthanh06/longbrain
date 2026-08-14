@@ -37,6 +37,12 @@ GLOBAL_AGENTS = CODEX_HOME / "AGENTS.md"
 SECTION = "[mcp_servers.longbrain]"
 MCP_URL = "http://localhost:8800/mcp"
 URL_LINE = f'url = "{MCP_URL}"'
+# Empty (default) = the service's own auth is disabled too; matches it.
+# env_http_headers references an ENV VAR NAME (not the secret itself) —
+# Codex reads LONGBRAIN_API_KEY from its own process environment at
+# connection time, so the key never lands in config.toml.
+API_KEY = os.environ.get("LONGBRAIN_API_KEY", "")
+ENV_HEADER_LINE = 'env_http_headers = { "X-API-Key" = "LONGBRAIN_API_KEY" }'
 HOOK_SCRIPT = REPO / "hooks" / "codex" / "turn_ended.py"
 NOTIFY_MARKER = "Longbrain Codex notify"
 AGENTS_MARKER_START = "<!-- longbrain:codex-memory-priority:start (managed by setup.sh) -->"
@@ -381,8 +387,11 @@ def register_mcp() -> None:
     if header_idx is None:
         block = ["", "# Longbrain shared memory (added by longbrain setup)",
                  SECTION, URL_LINE]
+        if API_KEY:
+            block.append(ENV_HEADER_LINE)
         new_lines = lines + block
-        note(f"registered MCP longbrain -> {MCP_URL}")
+        note(f"registered MCP longbrain -> {MCP_URL}"
+             + (", with X-API-Key from $LONGBRAIN_API_KEY" if API_KEY else ""))
         changed = True
     else:
         # Body of the main section only — it ends at the next table header,
@@ -408,6 +417,36 @@ def register_mcp() -> None:
         else:
             new_lines.insert(header_idx + 1, URL_LINE)
             note(f"set MCP longbrain url -> {MCP_URL}")
+            changed = True
+
+        # env_http_headers is fully managed by us (only key we ever write
+        # here besides url) — add/update/remove to match whether an
+        # LONGBRAIN_API_KEY is currently configured.
+        end = next(
+            (i for i in range(header_idx + 1, len(new_lines))
+             if new_lines[i].lstrip().startswith("[")),
+            len(new_lines),
+        )
+        header_line_idx = next(
+            (i for i in range(header_idx + 1, end)
+             if new_lines[i].split("=")[0].strip() == "env_http_headers"),
+            None,
+        )
+        if API_KEY and header_line_idx is None:
+            url_now_idx = next(
+                i for i in range(header_idx + 1, len(new_lines))
+                if new_lines[i].split("=")[0].strip() == "url"
+            )
+            new_lines.insert(url_now_idx + 1, ENV_HEADER_LINE)
+            note("set MCP longbrain X-API-Key header from $LONGBRAIN_API_KEY")
+            changed = True
+        elif API_KEY and new_lines[header_line_idx] != ENV_HEADER_LINE:
+            new_lines[header_line_idx] = ENV_HEADER_LINE
+            note("updated MCP longbrain X-API-Key header")
+            changed = True
+        elif not API_KEY and header_line_idx is not None:
+            del new_lines[header_line_idx]
+            note("removed MCP longbrain X-API-Key header (auth disabled)")
             changed = True
 
     new_lines, notify_changed = _patch_notify(new_lines)

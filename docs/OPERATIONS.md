@@ -16,9 +16,10 @@ installed agent (each skipped gracefully when absent):
   `~/.hermes/SOUL.md` → restarts Hermes Desktop.
 - **Claude Code** (`scripts/configure_claude.py`): registers the 4 hooks in
   `~/.claude/settings.json` and the `longbrain` MCP server (user scope).
-  **Needs no API key**: Claude Code runs on your Claude login, and
-  consolidation uses the service-side LLM or the `consolidate_session` MCP
-  tool. Restart open sessions to pick the hooks up.
+  It needs no **LLM provider** API key because Claude Code runs on your Claude
+  login. If `LONGBRAIN_API_KEY` is set, the configurator also attaches that
+  optional Longbrain shared-secret to the MCP registration; hooks read the
+  same key from the repository `.env`. Restart open sessions to pick hooks up.
 - **Codex** (`scripts/configure_codex.py`): registers the `longbrain` MCP
   server plus `SessionStart`, `UserPromptSubmit`, and `Stop` hooks in
   `~/.codex/hooks.json`. These provide consolidation catch-up, automatic

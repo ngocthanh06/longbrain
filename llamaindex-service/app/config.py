@@ -255,3 +255,45 @@ CONSOLIDATION_SWEEP_DEBOUNCE = float(os.getenv("CONSOLIDATION_SWEEP_DEBOUNCE", "
 # forbids generic/tool knowledge; these are the safety nets on top.
 CONSOLIDATION_MAX_FACTS = int(os.getenv("CONSOLIDATION_MAX_FACTS", "5"))
 CONSOLIDATION_MIN_IMPORTANCE = float(os.getenv("CONSOLIDATION_MIN_IMPORTANCE", "0.5"))
+
+# ---------------------------------------------------------------------------
+# Write-path guards (security hardening plan, Phase 3). This deployment's
+# threat model is local-only (Qdrant and this API are both bound to
+# 127.0.0.1, see docker-compose.yml) — there is no external attacker to rate
+# limit against. These exist to bound a single runaway/looping agent call
+# (bad retry loop, a document that tricks an LLM into calling a tool
+# repeatedly), not to enforce per-user quotas.
+# ---------------------------------------------------------------------------
+MAX_FACT_TEXT_CHARS = int(os.getenv("MAX_FACT_TEXT_CHARS", "8000"))
+MAX_FACTS_PER_CALL = int(os.getenv("MAX_FACTS_PER_CALL", "50"))
+MAX_SESSION_SUMMARY_CHARS = int(os.getenv("MAX_SESSION_SUMMARY_CHARS", "2000"))
+MAX_TURN_TEXT_CHARS = int(os.getenv("MAX_TURN_TEXT_CHARS", "20000"))
+MAX_KB_TEXT_CHARS = int(os.getenv("MAX_KB_TEXT_CHARS", "20000"))
+MAX_INGEST_FILE_BYTES = int(os.getenv("MAX_INGEST_FILE_BYTES", str(50 * 1024 * 1024)))
+MAX_INGEST_PATH_FILES = int(os.getenv("MAX_INGEST_PATH_FILES", "500"))
+RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "10"))
+RATE_LIMIT_MAX_CALLS = int(os.getenv("RATE_LIMIT_MAX_CALLS", "20"))
+
+# Per-action tiers (security hardening plan, Phase 3): a single flat limit
+# either throttles normal fact-saving or leaves destructive actions too
+# permissive. Actions not listed here (recall/search/list — read-only, no
+# limit) keep the flat RATE_LIMIT_WINDOW_SECONDS/RATE_LIMIT_MAX_CALLS pair
+# above via app/ratelimit.py's fallback. All tiers use a fixed 60s window.
+RATE_LIMIT_APPEND_PER_MIN = int(os.getenv("RATE_LIMIT_APPEND_PER_MIN", "90"))
+RATE_LIMIT_SAVE_PER_MIN = int(os.getenv("RATE_LIMIT_SAVE_PER_MIN", "20"))
+RATE_LIMIT_CONSOLIDATE_PER_MIN = int(os.getenv("RATE_LIMIT_CONSOLIDATE_PER_MIN", "10"))
+RATE_LIMIT_INGEST_PER_MIN = int(os.getenv("RATE_LIMIT_INGEST_PER_MIN", "10"))
+RATE_LIMIT_DELETE_PER_MIN = int(os.getenv("RATE_LIMIT_DELETE_PER_MIN", "5"))
+RATE_LIMIT_FULL_RESET_PER_MIN = int(os.getenv("RATE_LIMIT_FULL_RESET_PER_MIN", "1"))
+
+# ---------------------------------------------------------------------------
+# Optional shared-secret auth (defense in depth on top of the 127.0.0.1
+# bind). Empty (default) = disabled, matching every existing deployment
+# until a key is explicitly set in .env. When set, every HTTP request must
+# carry a matching X-API-Key header, except GET /health (docker healthcheck
+# has no way to attach one). GET /ui is NOT exempt — the middleware also
+# accepts HTTP Basic auth there (the browser prompts on navigation and then
+# carries the credential to the page's own fetch() calls); the key is never
+# embedded in the served HTML/JS. See main.py's require_api_key/_has_api_key.
+# ---------------------------------------------------------------------------
+API_KEY = os.getenv("LONGBRAIN_API_KEY", "")

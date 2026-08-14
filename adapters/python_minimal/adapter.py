@@ -26,12 +26,17 @@ MEMORY_URL = os.environ.get("LONGBRAIN_MEMORY_URL", "http://localhost:8800")
 AGENT_NAME = "python-minimal"  # <- your agent's name; stamps every record
 MAX_CONTEXT_CHARS = int(os.environ.get("LONGBRAIN_MEMORY_MAX_CONTEXT", "6000"))
 MIN_PROMPT_CHARS = int(os.environ.get("LONGBRAIN_RECALL_MIN_PROMPT_CHARS", "15"))
+# Empty (default) = the service's own auth is disabled too; matches it.
+API_KEY = os.environ.get("LONGBRAIN_API_KEY", "")
 
 
 def post(path: str, body: dict, timeout: float = 5.0):
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
     req = urllib.request.Request(
         MEMORY_URL + path, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"}, method="POST",
+        headers=headers, method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

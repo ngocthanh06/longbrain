@@ -15,6 +15,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from post_llm_call import debug_dump, env_get  # noqa: E402
+from api_auth import api_key_header  # noqa: E402
 
 MEMORY_URL = env_get("LONGBRAIN_MEMORY_URL", "http://localhost:8800") + "/memory/consolidate"
 
@@ -35,7 +36,10 @@ def main():
 
     body = json.dumps({"session_id": session_id, "background": True}).encode()
     request = urllib.request.Request(
-        MEMORY_URL, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        MEMORY_URL,
+        data=body,
+        headers={"Content-Type": "application/json", **api_key_header()},
+        method="POST",
     )
     try:
         urllib.request.urlopen(request, timeout=5)

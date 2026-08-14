@@ -31,6 +31,7 @@ sys.path.insert(0, str(HOOKS))
 sys.path.insert(0, str(HOOKS / "claude"))
 
 from common import resolve_project  # noqa: E402
+from api_auth import api_key_header  # noqa: E402
 
 MEMORY_BASE = os.environ.get(
     "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
@@ -171,7 +172,7 @@ def post_json(path: str, body: dict, timeout: float = 5.0) -> bool:
     request = urllib.request.Request(
         MEMORY_BASE + path,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **api_key_header()},
         method="POST",
     )
     try:

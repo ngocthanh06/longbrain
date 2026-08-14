@@ -4,10 +4,31 @@ Replaces the old host-side stdio mcp-bridge: Hermes registers
 http://localhost:8800/mcp and needs no Python environment on the host.
 """
 
+import logging
+import re
+from typing import Annotated
+
 from pydantic import BaseModel, Field
 
-from app import config, consolidation, documents, memories, memory_store, scope_policy
+from app import config, consolidation, documents, memories, memory_store, ratelimit, scope_policy
 from app.runtime import state
+
+logger = logging.getLogger("uvicorn")
+
+_AUDIT_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _audit(action: str, allowed: bool, **fields) -> None:
+    """Structured log line for a write or destructive action's outcome
+    (security hardening plan, Phase 2/3 — every rate-limited action gets
+    audit metadata, not just the confirm-gated ones). Only ids, counts and
+    the allow/deny decision — never memory/document content. Field values
+    are caller-supplied ids (session_id, memory_id, ...); strip control
+    characters so one can't inject fake newline-delimited log lines."""
+    detail = " ".join(
+        f"{k}={_AUDIT_CONTROL_CHARS_RE.sub('_', str(v))}" for k, v in fields.items()
+    )
+    logger.info("audit action=%s allow=%s %s", action, allowed, detail)
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -16,7 +37,10 @@ except ImportError:  # pragma: no cover
 
 
 class Fact(BaseModel):
-    text: str = Field(description="Self-contained fact worth remembering long-term")
+    text: str = Field(
+        min_length=1, max_length=config.MAX_FACT_TEXT_CHARS,
+        description="Self-contained fact worth remembering long-term",
+    )
     type: str = Field(default="fact", description="fact | preference | decision | task")
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
     # Optional (subject, relation, object) triple from the extraction
@@ -54,7 +78,9 @@ def _register_tools() -> None:
 
     @mcp.tool()
     def memory_append(
-        session_id: str, user_message: str = "", assistant_response: str = "",
+        session_id: str,
+        user_message: Annotated[str, Field(max_length=config.MAX_TURN_TEXT_CHARS)] = "",
+        assistant_response: Annotated[str, Field(max_length=config.MAX_TURN_TEXT_CHARS)] = "",
         turn_id: str = "",
     ) -> str:
         """Persist a completed conversation turn into episodic memory. Idempotent
@@ -62,6 +88,9 @@ def _register_tools() -> None:
         agent, if you have one) — without it, retries are best-effort only:
         content/session-state alone cannot distinguish every retry from a
         genuine repeat (see memory_store.add_message)."""
+        if not ratelimit.allow("memory_append"):
+            _audit("memory_append", False, session_id=session_id, reason="rate_limited")
+            return "Refused: too many memory_append calls in a short window. Wait a moment and retry."
         client, embed = state["qdrant_client"], state["embed_model"]
         # Same session stickiness as REST /memory/append.
         project_id = memory_store.get_session_project(client, session_id)
@@ -76,12 +105,14 @@ def _register_tools() -> None:
                                      project_id=project_id, sibling_content=user_message,
                                      turn_id=turn_id)
             n += 1
+        _audit("memory_append", True, session_id=session_id, messages_stored=n)
         return f"Stored {n} message(s) for session {session_id}."
 
     @mcp.tool()
     def save_memories(
-        facts: list[Fact], session_id: str = "", project: str = "",
-        session_summary: str = "",
+        facts: Annotated[list[Fact], Field(max_length=config.MAX_FACTS_PER_CALL)],
+        session_id: str = "", project: str = "",
+        session_summary: Annotated[str, Field(max_length=config.MAX_SESSION_SUMMARY_CHARS)] = "",
     ) -> str:
         """Save distilled long-term facts (decisions, preferences, project info,
         constraints, tasks) into semantic memory. Near-duplicate existing facts
@@ -92,6 +123,9 @@ def _register_tools() -> None:
         list is fine when nothing was worth keeping) and pass the 2-4 sentence
         `session_summary` the handout instructions asked for (goal, decisions,
         unresolved) so future recall can show it instead of raw snippets."""
+        if not ratelimit.allow("save_memories"):
+            _audit("save_memories", False, session_id=session_id, reason="rate_limited")
+            return "Refused: too many save_memories calls in a short window. Wait a moment and retry."
         client = state["qdrant_client"]
         project_id = project or (
             memory_store.get_session_project(client, session_id) if session_id
@@ -113,6 +147,7 @@ def _register_tools() -> None:
         if handout:
             memory_store.mark_consolidated(client, handout)
         suffix = " Session summary stored." if summary_saved else ""
+        _audit("save_memories", True, session_id=session_id, project_id=project_id, facts_saved=len(results))
         if not results:
             return "Nothing to save." + (
                 f" Marked {len(handout)} turn(s) consolidated." if handout else ""
@@ -128,10 +163,14 @@ def _register_tools() -> None:
         directly. Otherwise it returns the transcript plus extraction
         instructions — follow them, then call save_memories with the result,
         then this tool again is NOT needed (turns are marked on save)."""
+        if not ratelimit.allow("consolidate_session"):
+            _audit("consolidate_session", False, session_id=session_id, reason="rate_limited")
+            return "Refused: too many consolidate_session calls in a short window. Wait a moment and retry."
         client, embed, llm = state["qdrant_client"], state["embed_model"], state.get("llm")
         if llm is not None:
             result = consolidation.consolidate_session(client, embed, llm, session_id)
             saved = result["facts"]
+            _audit("consolidate_session", True, session_id=session_id, facts_saved=len(saved))
             return (
                 f"Consolidated {result.get('turns_processed', 0)} turns into "
                 f"{len(saved)} fact(s):\n" + "\n".join(f"- {f['text']}" for f in saved)
@@ -211,24 +250,76 @@ def _register_tools() -> None:
         confirm=true ONLY after the user explicitly confirmed this specific
         memory should be removed."""
         if not confirm:
+            _audit("forget_memory", False, memory_id=memory_id, reason="no_confirm")
             return (
                 "Refused: deletion needs the user's explicit confirmation. "
                 "Show them the memory text, and once they agree call "
                 "forget_memory(memory_id, confirm=true)."
             )
-        if memories.delete_fact(state["qdrant_client"], memory_id):
+        if not ratelimit.allow("forget_memory"):
+            _audit("forget_memory", False, memory_id=memory_id, reason="rate_limited")
+            return "Refused: too many forget_memory calls in a short window. Wait a moment and retry."
+        deleted = memories.delete_fact(state["qdrant_client"], memory_id)
+        _audit("forget_memory", deleted, memory_id=memory_id)
+        if deleted:
             return f"Deleted memory {memory_id}."
         return f"No memory with id {memory_id}."
 
     @mcp.tool()
-    def forget_session(session_id: str) -> str:
+    def forget_session(session_id: str, confirm: bool = False) -> str:
         """Permanently delete one conversation session's stored history
         (all its turns in episodic memory). Facts already distilled from it
-        are NOT touched — use forget_about/forget_memory for those."""
+        are NOT touched — use forget_about/forget_memory for those.
+
+        Deletion is irreversible: pass confirm=true ONLY after the user
+        explicitly confirmed this session's history should be removed."""
+        if not confirm:
+            _audit("forget_session", False, session_id=session_id, reason="no_confirm")
+            return (
+                "Refused: deletion needs the user's explicit confirmation. "
+                "Show them which session this is, and once they agree call "
+                "forget_session(session_id, confirm=true)."
+            )
+        if not ratelimit.allow("forget_session"):
+            _audit("forget_session", False, session_id=session_id, reason="rate_limited")
+            return "Refused: too many forget_session calls in a short window. Wait a moment and retry."
         deleted = memory_store.delete_session(state["qdrant_client"], session_id)
+        _audit("forget_session", bool(deleted), session_id=session_id, messages_deleted=deleted)
         if not deleted:
             return f"No stored history for session {session_id}."
         return f"Deleted {deleted} stored message(s) of session {session_id}."
+
+    @mcp.tool()
+    def cleanup_garbage(
+        dry_run: bool = True, confirm: str = "", limit: int = 10000
+    ) -> str:
+        """Find or remove superseded document chunks and unreferenced local
+        document files.  The default is read-only.  Facts and conversation
+        history are never included.  Destructive execution requires the
+        exact confirmation ``CLEANUP SUPERSEDED``."""
+        if not dry_run and confirm != "CLEANUP SUPERSEDED":
+            _audit("cleanup_garbage", False, reason="no_confirm")
+            return (
+                'Refused. First run cleanup_garbage(dry_run=true), review the '
+                'result, then call cleanup_garbage(dry_run=false, '
+                'confirm="CLEANUP SUPERSEDED").'
+            )
+        if not dry_run and not ratelimit.allow("cleanup_garbage"):
+            _audit("cleanup_garbage", False, reason="rate_limited")
+            return "Refused: too many cleanup_garbage runs in a short window. Wait a moment and retry."
+        result = documents.cleanup_superseded(
+            state["qdrant_client"], dry_run=dry_run, limit=limit
+        )
+        if not dry_run:
+            _audit(
+                "cleanup_garbage", True,
+                chunks_deleted=result["chunks_deleted"], files_removed=result["files_removed"],
+            )
+        return (
+            f"Cleanup {result['status']}: {result['chunks_found']} stale chunk(s), "
+            f"{result['chunks_deleted']} deleted, {result['files_removed']} file(s) removed. "
+            f"Truncated={result['truncated']}."
+        )
 
     @mcp.tool()
     def forget_everything(confirm: str = "") -> str:
@@ -241,13 +332,18 @@ def _register_tools() -> None:
         anything else refuses. Note: the CURRENT conversation will keep being
         recorded from this point on; that is normal behaviour."""
         if confirm != "DELETE ALL":
+            _audit("forget_everything", False, reason="no_confirm")
             return (
                 'Refused. To wipe all memory, ask the user to confirm, then '
                 'call forget_everything(confirm="DELETE ALL").'
             )
+        if not ratelimit.allow("forget_everything"):
+            _audit("forget_everything", False, reason="rate_limited")
+            return "Refused: too many forget_everything calls in a short window. Wait a moment and retry."
         client = state["qdrant_client"]
         turns = memory_store.delete_all_history(client)
         facts = memories.delete_all_facts(client)
+        _audit("forget_everything", True, messages_deleted=turns, facts_deleted=facts)
         return (
             f"Memory wiped: {turns} conversation message(s) and {facts} fact(s) "
             "deleted. From now on new turns will be recorded again as usual."
@@ -315,18 +411,26 @@ def _register_tools() -> None:
         return "\n\n---\n\n".join(contents[:top_k])
 
     @mcp.tool()
-    def add_to_knowledge_base(text: str, source: str = "", project: str = "") -> str:
+    def add_to_knowledge_base(
+        text: Annotated[str, Field(min_length=1, max_length=config.MAX_KB_TEXT_CHARS)],
+        source: str = "", project: str = "",
+    ) -> str:
         """Add a piece of text to the document knowledge base for future
         retrieval, optionally scoped to a Hermes project slug."""
+        if not ratelimit.allow("add_to_knowledge_base"):
+            _audit("add_to_knowledge_base", False, reason="rate_limited")
+            return "Refused: too many add_to_knowledge_base calls in a short window. Wait a moment and retry."
         if state.get("index") is None:
             return ("Cannot ingest: document embedder unavailable "
                     "(doc_embedder_unavailable): "
                     + (state.get("doc_embed_error") or "unknown error"))
+        project_id = project or config.DEFAULT_PROJECT
         total = documents.ingest_text(
             state["index"], state["qdrant_client"], text,
             {"source": source} if source else {},
-            project_id=project or config.DEFAULT_PROJECT,
+            project_id=project_id,
         )
+        _audit("add_to_knowledge_base", True, project_id=project_id, total_chunks_indexed=total)
         return f"Added to knowledge base. Total chunks now indexed: {total}"
 
 

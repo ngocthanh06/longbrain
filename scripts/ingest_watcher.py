@@ -35,6 +35,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from api_auth import api_key_header  # noqa: E402
+
 MEMORY_URL = os.environ.get(
     "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
 )
@@ -147,10 +150,11 @@ def ingest_file(path: Path, project_id: str, document_key: str) -> bool:
     body += data
     body += f"\r\n--{boundary}--\r\n".encode()
 
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}", **api_key_header()}
     request = urllib.request.Request(
         f"{MEMORY_URL}/ingest/file",
         data=bytes(body),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers=headers,
         method="POST",
     )
     try:

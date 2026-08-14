@@ -22,6 +22,7 @@ from post_llm_call import debug_dump, env_get, resolve_project  # noqa: E402
 # Same admission gates as the other lifecycle hooks (Claude Code, Codex):
 # skip recall for prompts too short to carry meaning, cap the injected block.
 from admission_gate import cap_context, MIN_PROMPT_CHARS, context_prefix  # noqa: E402
+from api_auth import api_key_header  # noqa: E402
 
 MEMORY_URL = env_get("LONGBRAIN_MEMORY_URL", "http://localhost:8800") + "/memory/recall"
 TIMEOUT = float(env_get("LONGBRAIN_MEMORY_RECALL_TIMEOUT", "3"))
@@ -64,7 +65,10 @@ def main():
         }
     ).encode()
     request = urllib.request.Request(
-        MEMORY_URL, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        MEMORY_URL,
+        data=body,
+        headers={"Content-Type": "application/json", **api_key_header()},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as resp:

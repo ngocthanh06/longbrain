@@ -109,12 +109,40 @@ flowchart TB
 - **L3 Semantic memory** — facts/preferences/decisions/tasks distilled by
   consolidation, with automatic dedup/supersede
 - **L4 Knowledge base** — document RAG (each project's `docs/` folder is
-  auto-ingested)
+  auto-ingested). The `/ui` Documents panel covers the rest by hand: upload
+  a file, add a mounted path (import a whole folder), preview or delete a
+  document, and clean up superseded versions.
 
 The whole lifecycle runs **automatically**: record → recall → consolidate →
 controlled forgetting → nightly backup. Before every turn, a hook injects
 only the relevant, size-capped slice of memory — nothing relevant, nothing
 injected.
+
+## Security model
+
+- **Local-only by default** — Qdrant and the memory service both bind to
+  `127.0.0.1`; there is no exposed remote surface to secure.
+- **Auth is optional, defense-in-depth on top of that bind** — set
+  `LONGBRAIN_API_KEY` in `.env` to require an `X-API-Key` header; empty
+  (default) means auth stays disabled, matching every existing deployment.
+  See [docs/API.md](docs/API.md#auth) before enabling it — every connected
+  agent's MCP registration needs to carry the key, or its connection breaks.
+- **Threat-model limits are explicit** — recalled memory and ingested documents
+  are data, not trusted instructions; an agent must not execute instructions
+  found inside them. The `/documents/path` import intentionally accepts an
+  absolute path on the local machine, while all Longbrain-managed deletes are
+  confined to its own documents directory. Do not expose this stack beyond a
+  trusted single-user machine without adding a stronger isolation boundary.
+- **Read vs. write vs. destructive tools** — recall/search/list run
+  automatically with no approval needed; write tools (`memory_append`,
+  `save_memories`, consolidation, document ingest) are also automatic but
+  rate-limited and audited; MCP's destructive tools (`forget_memory`,
+  `forget_session`, `forget_everything`, `cleanup_garbage`) refuse to run
+  without an explicit confirmation string from the caller — that gate is
+  for an LLM calling them on its own initiative. The REST operator surface
+  (`/ui`, scripts) mostly mirrors this, except `DELETE /memory/facts/{id}`
+  and `/documents/delete`, which delete immediately (see
+  [docs/API.md](docs/API.md#forget-destructive--confirm-with-the-user-first)).
 
 ## Install
 

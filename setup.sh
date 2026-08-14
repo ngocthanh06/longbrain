@@ -35,9 +35,17 @@ step "Configuring .env"
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "Created .env from .env.example (default: local fastembed, no API key needed)."
+  echo "Auth remains disabled until LONGBRAIN_API_KEY is explicitly configured."
 else
   echo ".env already exists, keeping it as-is."
 fi
+
+# Docker Compose reads .env automatically, but host-side Python configurators
+# and hooks read process environment variables. Keep both paths in sync.
+set -a
+# shellcheck disable=SC1091
+. ./.env
+set +a
 
 # 3. Build + up
 step "Starting containers (first run builds the image, takes a few minutes)"

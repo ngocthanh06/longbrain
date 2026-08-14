@@ -14,6 +14,40 @@ Conventions used below:
   chars. Empty means the default project.
 - Point ids are deterministic, so retrying a write is always safe.
 
+### Auth
+
+Optional shared-secret auth, on top of the 127.0.0.1-only bind (defense in
+depth, not the primary boundary). Controlled by `LONGBRAIN_API_KEY` in
+`.env` — **empty (default) = disabled**. When a key is present, `setup.sh`
+passes it to the service and updates each detected MCP client before finishing.
+
+When set, every request needs a matching `X-API-Key` header, **except**
+`GET /health` — docker's healthcheck has no way to attach one.
+
+`GET /ui` is **not** exempt: the same middleware also accepts HTTP Basic
+auth there (a browser can prompt for Basic credentials on plain navigation,
+which it can't do for a custom header). The served page never embeds the
+key in HTML/JS — the browser carries the already-authenticated Basic
+credential to the page's own `fetch()` calls automatically.
+
+Every hook/script/adapter in this repo already sends the header when the
+key is set (`hooks/api_auth.py` for the Hermes/Claude Code/Codex hooks,
+inlined the same way in `adapters/python_minimal/adapter.py` and the
+`scripts/*.sh`/`scripts/*.py` callers). MCP registration also carries it:
+`claude mcp add --header` for Claude Code (the configurator reads the same
+`.env` parser even when invoked directly), `env_http_headers` in
+`config.toml` for Codex (references the `LONGBRAIN_API_KEY` env var name,
+not the secret itself — set by `scripts/configure_codex.py`), and a literal
+`headers: {"X-API-Key": ...}` on the `mcp_servers.longbrain` entry in
+Hermes Desktop's `config.yaml` (set by `scripts/configure_hermes.py`, which
+also `chmod 0600`s that file once it holds the key — confirmed against the
+`hermes-agent` source's `tools/mcp_tool.py` connection code, which reads
+and attaches `headers` on every real MCP connection).
+
+```bash
+curl -H "X-API-Key: $LONGBRAIN_API_KEY" localhost:8800/memory/stats
+```
+
 ---
 
 ## REST
@@ -176,6 +210,70 @@ curl -X POST localhost:8800/query/explain -H 'Content-Type: application/json' \
 {"label": "Khớp cao", "rerank_score": 2.31, "reason": "Tài liệu mô tả..."}
 ```
 
+#### `GET /documents`
+
+List L4 documents grouped from their indexed chunks (what the `/ui`
+Documents panel renders).
+
+```bash
+curl localhost:8800/documents
+```
+
+#### `GET /documents/content`
+
+Serve the active indexed original file for browser preview/download.
+Requires `project_id` and `document_key` (query params). `404` if the
+document or its file is missing.
+
+```bash
+curl "localhost:8800/documents/content?project_id=erp&document_key=faq.md"
+```
+
+#### `POST /documents/path`
+
+Import files already reachable from inside the container under a mounted
+path (the `/ui` "Add path" action) — one file or a whole directory
+(`rglob`, sorted). Every source file resolves through `documents.source_path()`
+so only paths actually mounted into the container are readable; anything
+else is `400`. Per-file size and directory file-count are capped
+(`MAX_INGEST_FILE_BYTES`, `MAX_INGEST_PATH_FILES`) — files over the size cap
+are skipped, not rejected outright, and the response reports a partial
+result: `imported` vs `skipped` counts, not a single pass/fail.
+
+```bash
+curl -X POST localhost:8800/documents/path -H 'Content-Type: application/json' \
+  -d '{"path": "/data/shared-docs", "project_id": "erp"}'
+```
+
+```json
+{"status": "ok", "files_found": 12, "imported": 11, "skipped": 1}
+```
+
+#### `POST /documents/delete`
+
+Hard-delete every chunk (and the orphaned original file, if no other chunk
+still references it) for one logical document — identified by
+`(project_id, document_key)` or by `stored_path` directly. Every deletion
+resolves the file through the same `documents.document_path()` boundary
+used by `/maintenance/cleanup`, so a path outside the documents root is
+rejected rather than deleted.
+
+**No confirmation string** — unlike the MCP `forget_*` tools below, REST
+delete endpoints (this one and `DELETE /memory/facts/{id}`) are direct
+operator actions: rate-limited and audited, but they delete on the first
+call. That's deliberate, not an oversight — see "REST vs. MCP" under
+[Forget](#forget-destructive--confirm-with-the-user-first) below. Confirm
+client-side (a UI dialog, a script's own `--yes` flag) before calling these.
+
+```bash
+curl -X POST localhost:8800/documents/delete -H 'Content-Type: application/json' \
+  -d '{"project_id": "erp", "document_key": "faq.md"}'
+```
+
+```json
+{"status": "ok", "chunks_deleted": 3, "files_removed": 1}
+```
+
 ### Memory lifecycle (L2 + L3)
 
 #### `POST /memory/append`
@@ -335,6 +433,11 @@ curl -X PATCH localhost:8800/memory/facts/<id>/type \
 
 Hard-delete one fact. Permanent — unlike supersede, it keeps no trace.
 
+**No confirmation param** — its MCP twin `forget_memory` requires
+`confirm=true`; this REST endpoint deletes on the first call (rate-limited
+and audited, same as `/documents/delete` above). See
+[Forget](#forget-destructive--confirm-with-the-user-first) for why.
+
 ```bash
 curl -X DELETE localhost:8800/memory/facts/<id>
 ```
@@ -350,6 +453,33 @@ curl -X DELETE "localhost:8800/memory/all?confirm=DELETE%20ALL"
 ```json
 {"status": "wiped", "messages_deleted": 385, "facts_deleted": 308}
 ```
+
+#### `POST /maintenance/cleanup`
+
+Garbage-collects only file-backed document chunks marked
+`superseded_by`. Facts and chat history are never touched. The default is a
+read-only plan:
+
+```bash
+curl -sS -X POST localhost:8800/maintenance/cleanup \
+  -H 'Content-Type: application/json' \
+  -d '{"dry_run": true, "limit": 10000}'
+```
+
+After reviewing the result, execute with the exact confirmation string:
+
+```bash
+curl -sS -X POST localhost:8800/maintenance/cleanup \
+  -H 'Content-Type: application/json' \
+  -d '{"dry_run": false, "confirm": "CLEANUP SUPERSEDED"}'
+```
+
+The operation is bounded by `limit`, deletes stale Qdrant chunks first, and
+removes a local original file only when no remaining document chunk references
+it. The dry-run response includes `items`, with each candidate's document key,
+project, superseding version, text preview, and whether its local file will be
+removed or kept because it is shared. It can therefore be run repeatedly until
+`truncated` is `false`.
 
 ### Re-tagging (project corrections)
 
@@ -381,7 +511,7 @@ curl -X PATCH localhost:8800/memory/projects/<old-slug> \
 curl localhost:8800/projects                  # projects with session/message counts
 curl localhost:8800/sessions                  # all stored sessions
 curl localhost:8800/sessions/s1/history       # one session's turns (role + content)
-curl -X DELETE localhost:8800/sessions/s1     # delete one session's stored history
+curl -X DELETE "localhost:8800/sessions/s1?confirm=true"  # delete one session's stored history
 ```
 
 Deleting a session removes its turns only — facts already distilled from it
@@ -441,6 +571,30 @@ return plain text designed to be read by the model. `project` is optional;
 project-aware recall is strict unless `project_scope=boost` or `global` is
 requested explicitly.
 
+Read tools (`memory_recall`, `search_history`, `search_knowledge_base`,
+`list_*`) run automatically, no confirmation needed. `memory_append`,
+`save_memories`, `consolidate_session` and `add_to_knowledge_base` are
+**write** operations — also automatic (no approval prompt), but each is
+rate-limited (`app/ratelimit.py`) and audited (id/count metadata only, never
+content) to bound a runaway/looping agent. `forget_*` and `cleanup_garbage`
+are destructive and need explicit confirmation (see below).
+
+Rate limits are tiered per action (a flat limit either throttles normal
+fact-saving or leaves deletes too permissive), each a fixed calls-per-minute
+budget, `.env`-overridable:
+
+| Action(s) | Default | `.env` var |
+|---|---|---|
+| `memory_append` | 90/min | `RATE_LIMIT_APPEND_PER_MIN` |
+| `save_memories` | 20/min | `RATE_LIMIT_SAVE_PER_MIN` |
+| `consolidate_session` (MCP + `/memory/consolidate*`) | 10/min | `RATE_LIMIT_CONSOLIDATE_PER_MIN` |
+| `add_to_knowledge_base`, document ingest (`/ingest/*`, `/documents/path`) | 10/min | `RATE_LIMIT_INGEST_PER_MIN` |
+| `documents_delete`, `cleanup_garbage`, `forget_memory`, `forget_session` | 5/min | `RATE_LIMIT_DELETE_PER_MIN` |
+| `forget_everything` | 1/min | `RATE_LIMIT_FULL_RESET_PER_MIN` |
+
+Anything not listed (all read tools) is unlimited. A refused call returns a
+plain-text refusal (MCP tools) or `429` (REST) — never a silent drop.
+
 ### Recall & record
 
 | Tool | Use it when |
@@ -472,8 +626,19 @@ requested explicitly.
 |---|---|
 | `forget_about(query)` | The user asks to forget something. Returns **candidates with ids** — show them, get confirmation, then delete each with `forget_memory`. Never deletes by itself. |
 | `forget_memory(memory_id, confirm=false)` | Deleting one fact by id. Refuses unless `confirm=true` — set it only after the user explicitly confirmed that specific memory. |
-| `forget_session(session_id)` | Deleting one session's stored turns (distilled facts are not touched). |
+| `forget_session(session_id, confirm=false)` | Deleting one session's stored turns (distilled facts are not touched). Refuses unless `confirm=true`. |
 | `forget_everything(confirm="")` | Full reset. Requires the exact string `confirm="DELETE ALL"`; anything else refuses. |
+
+**REST vs. MCP confirmation isn't symmetric.** MCP tools are agent-facing —
+an LLM can call them on its own initiative, so `confirm` exists to force a
+prior human decision into the call. REST is the operator surface (`/ui`,
+scripts, curl) where the human is already the one making the call, so most
+REST deletes still require it (`DELETE /memory/all?confirm=DELETE%20ALL`,
+`DELETE /sessions/{id}?confirm=true`, `/maintenance/cleanup` with
+`confirm="CLEANUP SUPERSEDED"`) — but two do **not**:
+`DELETE /memory/facts/{id}` and `/documents/delete` delete immediately once
+rate-limited and audited. If a client calls either of these on behalf of an
+agent without its own confirmation step, that step is missing, not assumed.
 
 ---
 

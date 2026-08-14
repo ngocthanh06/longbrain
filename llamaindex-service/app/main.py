@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hmac
 import json
 import logging
 import re
@@ -9,18 +11,32 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
-from app import config, consolidation, documents, enrich, memories, memory_store, providers, qdrant_setup, scheduler, scope_policy, transfer
+from app import config, consolidation, documents, enrich, memories, memory_store, providers, qdrant_setup, ratelimit, scheduler, scope_policy, transfer
 from app.mcp_server import mcp
 from app.runtime import state
 
 logger = logging.getLogger("uvicorn")
+
+_AUDIT_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _audit(action: str, allowed: bool, **fields) -> None:
+    """Structured log line for a destructive/rate-limited action's outcome.
+    Only ids, counts and the allow/deny decision — never memory/document
+    content. Field values are caller-supplied ids (session_id, project_id,
+    ...); strip control characters so one can't inject fake newline-
+    delimited log lines."""
+    detail = " ".join(
+        f"{k}={_AUDIT_CONTROL_CHARS_RE.sub('_', str(v))}" for k, v in fields.items()
+    )
+    logger.info("audit action=%s allow=%s %s", action, allowed, detail)
 
 
 @asynccontextmanager
@@ -116,6 +132,43 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Hermes Memory Service", lifespan=lifespan)
+_APP_DIR = Path(__file__).resolve().parent
+
+# GET /health is exempt because docker's healthcheck cannot attach a header.
+_AUTH_EXEMPT_PATHS = {"/health"}
+
+
+def _has_api_key(request) -> bool:
+    """Accept X-API-Key and browser-friendly Basic auth.
+
+    Browsers can prompt for Basic credentials during a normal /ui navigation,
+    whereas they cannot attach X-API-Key until JavaScript has loaded.
+    """
+    supplied = request.headers.get("x-api-key", "")
+    if hmac.compare_digest(supplied, config.API_KEY):
+        return True
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(authorization[6:], validate=True).decode("utf-8")
+        _, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+        return False
+    return hmac.compare_digest(password, config.API_KEY)
+
+
+@app.middleware("http")
+async def require_api_key(request, call_next):
+    """No-op when config.API_KEY is unset — preserves current behavior for
+    every deployment that hasn't opted in. Covers /mcp too: middleware wraps
+    the whole ASGI app, including the sub-app mounted below."""
+    if config.API_KEY and request.url.path not in _AUTH_EXEMPT_PATHS:
+        if not _has_api_key(request):
+            response = JSONResponse({"detail": "missing or invalid API key"}, status_code=401)
+            response.headers["WWW-Authenticate"] = 'Basic realm="Longbrain"'
+            return response
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +186,7 @@ class ChatResponse(BaseModel):
 
 
 class IngestTextRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=config.MAX_KB_TEXT_CHARS)
     metadata: dict = {}
     project_id: str = config.DEFAULT_PROJECT
 
@@ -145,13 +198,27 @@ class IngestResponse(BaseModel):
 
 class DeleteDocumentRequest(BaseModel):
     project_id: str
-    document_key: str
+    document_key: str = ""
+    stored_path: str = ""
 
 
 class DeleteDocumentResponse(BaseModel):
     status: str
     chunks_deleted: int
     files_removed: int
+
+
+class CleanupRequest(BaseModel):
+    """A guarded garbage-collection request.
+
+    A plan is always safe to request.  Destructive execution requires the
+    explicit confirmation string so a dashboard or operator cannot
+    accidentally turn a health check into a delete operation.
+    """
+
+    dry_run: bool = True
+    confirm: str = ""
+    limit: int = Field(default=10000, ge=1, le=100000)
 
 
 class DocumentSearchRequest(BaseModel):
@@ -171,6 +238,15 @@ class DocumentSearchHit(BaseModel):
 
 class DocumentSearchResponse(BaseModel):
     results: list[DocumentSearchHit]
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[dict]
+
+
+class DocumentPathRequest(BaseModel):
+    path: str
+    project_id: str = config.DEFAULT_PROJECT
 
 
 class QueryRequest(BaseModel):
@@ -198,8 +274,8 @@ class CompletionRequest(BaseModel):
 
 class MemoryAppendRequest(BaseModel):
     session_id: str
-    user_message: str = ""
-    assistant_response: str = ""
+    user_message: str = Field(default="", max_length=config.MAX_TURN_TEXT_CHARS)
+    assistant_response: str = Field(default="", max_length=config.MAX_TURN_TEXT_CHARS)
     project_id: str = config.DEFAULT_PROJECT  # hook resolves from Hermes sidebar via cwd
     project_source: str = ""  # "folder" | "active" | "default" — how the hook resolved it
     source_agent: str = ""  # "hermes" | "claude-code" | … — which agent produced the turn
@@ -220,7 +296,7 @@ class RecallRequest(BaseModel):
 
 
 class FactIn(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=config.MAX_FACT_TEXT_CHARS)
     type: str = "fact"
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
     # Optional supersession triple — see memories._triple_of.
@@ -230,7 +306,7 @@ class FactIn(BaseModel):
 
 
 class SaveFactsRequest(BaseModel):
-    facts: list[FactIn]
+    facts: list[FactIn] = Field(max_length=config.MAX_FACTS_PER_CALL)
     session_id: str = ""
     project_id: str = config.DEFAULT_PROJECT
 
@@ -411,6 +487,9 @@ def _require_doc_embedder():
 @app.post("/ingest/text", response_model=IngestResponse)
 def ingest_text(payload: IngestTextRequest, background_tasks: BackgroundTasks):
     _require_doc_embedder()
+    if not ratelimit.allow("ingest"):
+        _audit("ingest", False, project_id=payload.project_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many ingest calls in a short window")
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
     total = documents.ingest_text(
@@ -425,6 +504,7 @@ def ingest_text(payload: IngestTextRequest, background_tasks: BackgroundTasks):
             payload.metadata["source"], payload.project_id or config.DEFAULT_PROJECT,
             payload.metadata.get("document_key", ""), payload.metadata.get("stored_path", ""),
         )
+    _audit("ingest", True, project_id=payload.project_id, total_chunks_indexed=total)
     return IngestResponse(status="ok", total_chunks_indexed=total)
 
 
@@ -436,15 +516,30 @@ async def ingest_file(
     project_id: str = Form(config.DEFAULT_PROJECT),
 ):
     _require_doc_embedder()
+    if not ratelimit.allow("ingest"):
+        _audit("ingest", False, project_id=project_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many ingest calls in a short window")
     try:
         parsed_metadata = json.loads(metadata) if metadata else {}
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="metadata must be valid JSON") from exc
 
+    safe_filename = Path(file.filename).name if file.filename else ""
+    if not safe_filename:
+        raise HTTPException(status_code=400, detail="filename is required")
+
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir) / file.filename
+        tmp_path = Path(tmp_dir) / safe_filename
+        total = 0
         with tmp_path.open("wb") as f:
-            f.write(await file.read())
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > config.MAX_INGEST_FILE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"file exceeds MAX_INGEST_FILE_BYTES ({config.MAX_INGEST_FILE_BYTES} bytes)",
+                    )
+                f.write(chunk)
         stored = documents.store_original(tmp_path, file.filename)
 
     # An explicit empty string (as opposed to omitting the form field) must
@@ -467,8 +562,10 @@ async def ingest_file(
             documents._supersede_previous_versions(
                 state["qdrant_client"], project_id, document_key, str(stored)
             )
+        status = "repaired_duplicate" if document_key else "skipped_duplicate"
+        _audit("ingest", True, project_id=project_id, status=status)
         return IngestResponse(
-            status="repaired_duplicate" if document_key else "skipped_duplicate",
+            status=status,
             total_chunks_indexed=documents.point_count(state["qdrant_client"]),
         )
     total = documents.ingest_file(
@@ -481,6 +578,7 @@ async def ingest_file(
         parsed_metadata["source"], project_id,
         parsed_metadata.get("document_key", ""), parsed_metadata["stored_path"],
     )
+    _audit("ingest", True, project_id=project_id, total_chunks_indexed=total)
     return IngestResponse(status="ok", total_chunks_indexed=total)
 
 
@@ -490,10 +588,108 @@ def delete_document(payload: DeleteDocumentRequest):
     document, identified by (project_id, document_key). Used by connectors
     to clear Longbrain's own copy of a document a user un-registers — never
     touches the source system the content came from."""
-    if not payload.project_id or not payload.document_key:
-        raise HTTPException(status_code=400, detail="project_id and document_key are required")
-    result = documents.delete_document(state["qdrant_client"], payload.project_id, payload.document_key)
+    if not ratelimit.allow("documents_delete"):
+        raise HTTPException(status_code=429, detail="too many documents/delete calls in a short window")
+    if not payload.project_id or not (payload.document_key or payload.stored_path):
+        raise HTTPException(status_code=400, detail="project_id and document_key or stored_path are required")
+    if payload.stored_path:
+        try:
+            documents.document_path(payload.stored_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result = documents.delete_document_path(
+            state["qdrant_client"], payload.project_id, payload.stored_path
+        )
+    else:
+        result = documents.delete_document(state["qdrant_client"], payload.project_id, payload.document_key)
+    _audit(
+        "documents_delete", True, project_id=payload.project_id,
+        document_key=payload.document_key, stored_path=bool(payload.stored_path),
+        chunks_deleted=result["chunks_deleted"], files_removed=result["files_removed"],
+    )
     return DeleteDocumentResponse(status="ok", **result)
+
+
+@app.post("/documents/path")
+def ingest_document_path(payload: DocumentPathRequest, background_tasks: BackgroundTasks):
+    """Import files already available under the persistent L4 documents path."""
+    _require_doc_embedder()
+    if not ratelimit.allow("ingest"):
+        _audit("ingest", False, project_id=payload.project_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many ingest calls in a short window")
+    try:
+        root = documents.source_path(payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"source path does not exist: {exc}") from exc
+    if not root.exists():
+        raise HTTPException(status_code=404, detail="path does not exist")
+    if root.is_file():
+        files = [root]
+    else:
+        files = []
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            files.append(candidate)
+            if len(files) > config.MAX_INGEST_PATH_FILES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"more than MAX_INGEST_PATH_FILES ({config.MAX_INGEST_PATH_FILES}) files under this path",
+                )
+        files.sort()
+    if not files:
+        raise HTTPException(status_code=400, detail="path contains no files")
+    imported = 0
+    skipped = 0
+    for source in files:
+        if source.stat().st_size > config.MAX_INGEST_FILE_BYTES:
+            skipped += 1
+            continue
+        stored = documents.store_original(source, source.name)
+        metadata = {
+            "source": source.name,
+            "document_key": str(source.relative_to(root if root.is_dir() else source.parent)),
+            "stored_path": str(stored),
+        }
+        if documents.already_ingested(state["qdrant_client"], str(stored), payload.project_id):
+            skipped += 1
+            continue
+        documents.ingest_file(state["index"], state["qdrant_client"], stored, metadata, payload.project_id)
+        imported += 1
+        background_tasks.add_task(
+            enrich.enrich_document, state["index"], state["qdrant_client"],
+            metadata["source"], payload.project_id, metadata["document_key"], metadata["stored_path"],
+        )
+    _audit("ingest", True, project_id=payload.project_id, imported=imported, skipped=skipped)
+    return {"status": "ok", "files_found": len(files), "imported": imported, "skipped": skipped}
+
+
+@app.post("/maintenance/cleanup")
+def maintenance_cleanup(payload: CleanupRequest):
+    """Plan or execute safe document garbage collection.
+
+    Only superseded, file-backed document chunks are eligible.  Facts and
+    chat history are intentionally excluded because age alone does not prove
+    that they are disposable memory.
+    """
+    if not payload.dry_run and payload.confirm != "CLEANUP SUPERSEDED":
+        raise HTTPException(
+            status_code=400,
+            detail='confirm must be "CLEANUP SUPERSEDED" for destructive cleanup',
+        )
+    if not payload.dry_run and not ratelimit.allow("cleanup_garbage"):
+        raise HTTPException(status_code=429, detail="too many cleanup runs in a short window")
+    result = documents.cleanup_superseded(
+        state["qdrant_client"], dry_run=payload.dry_run, limit=payload.limit
+    )
+    if not payload.dry_run:
+        _audit(
+            "cleanup_garbage", True,
+            chunks_deleted=result["chunks_deleted"], files_removed=result["files_removed"],
+        )
+    return result
 
 
 @app.post("/documents/search", response_model=DocumentSearchResponse)
@@ -517,6 +713,31 @@ def documents_search(payload: DocumentSearchRequest):
         )
         for h in hits
     ])
+
+
+@app.get("/documents", response_model=DocumentListResponse)
+def documents_list():
+    """List L4 documents grouped from their indexed chunks for the UI."""
+    return DocumentListResponse(documents=documents.list_documents(state["qdrant_client"]))
+
+
+@app.get("/documents/content")
+def document_content(project_id: str, document_key: str):
+    """Serve the active indexed original for browser preview/download."""
+    if not project_id or not document_key:
+        raise HTTPException(status_code=400, detail="project_id and document_key are required")
+    stored_path = documents.find_stored_path(
+        state["qdrant_client"], project_id, document_key
+    )
+    if not stored_path:
+        raise HTTPException(status_code=404, detail="active document not found")
+    try:
+        path = documents.document_path(stored_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="document file is missing")
+    return FileResponse(path, content_disposition_type="inline")
 
 
 def _project_filters(project: str):
@@ -592,6 +813,9 @@ def memory_append(payload: MemoryAppendRequest, background_tasks: BackgroundTask
     Called from the Hermes `post_llm_call` hook so every conversation lands
     in Qdrant. Point ids are deterministic — retries are idempotent.
     """
+    if not ratelimit.allow("memory_append"):
+        _audit("memory_append", False, session_id=payload.session_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many /memory/append calls in a short window")
     client, embed = state["qdrant_client"], state["embed_model"]
     # Session stickiness with intentional-move override — see
     # memory_store.resolve_append_project for the rules.
@@ -622,6 +846,7 @@ def memory_append(payload: MemoryAppendRequest, background_tasks: BackgroundTask
     # session's backlog gets flushed within one debounce window of crossing
     # the threshold, not indefinitely.
     background_tasks.add_task(scheduler.run_sweep_if_due, state)
+    _audit("memory_append", True, session_id=payload.session_id, project_id=project_id, messages_stored=appended)
     return {"status": "ok", "appended": appended, "project": project_id,
             "last_written_at": meta.get("last_written_at")}
 
@@ -646,6 +871,9 @@ def memory_recall(payload: RecallRequest):
 
 @app.post("/memory/facts")
 def memory_save_facts(payload: SaveFactsRequest):
+    if not ratelimit.allow("save_memories"):
+        _audit("save_memories", False, session_id=payload.session_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many /memory/facts calls in a short window")
     project_id = payload.project_id
     if project_id == config.DEFAULT_PROJECT and payload.session_id:
         project_id = memory_store.get_session_project(
@@ -657,6 +885,7 @@ def memory_save_facts(payload: SaveFactsRequest):
         session_id=payload.session_id, project_id=project_id,
         llm=state.get("llm"),
     )
+    _audit("save_memories", True, session_id=payload.session_id, project_id=project_id, facts_saved=len(results))
     return {"status": "ok", "project": project_id, "results": results}
 
 
@@ -675,8 +904,14 @@ def memory_search(payload: MemorySearchRequest):
 @app.post("/memory/consolidate")
 def memory_consolidate(payload: ConsolidateRequest, background_tasks: BackgroundTasks):
     if payload.background:
-        # Hook-friendly: never block or error the caller. No LLM -> the
-        # periodic sweep / manual path will pick the session up later.
+        # Hook-friendly: never block or error the caller (on_session_end
+        # relies on this — it fires on every session end, best-effort, and
+        # ignores the response). Rate-limited -> skip rather than 429; the
+        # session stays unconsolidated and the debounced catch-up sweep
+        # picks it up later, same as "no LLM configured" below.
+        if not ratelimit.allow("consolidate_session"):
+            _audit("consolidate_session", False, session_id=payload.session_id, reason="rate_limited")
+            return {"status": "skipped", "reason": "rate_limited"}
         if state.get("llm") is None:
             return {"status": "skipped", "reason": "no LLM configured"}
         background_tasks.add_task(
@@ -684,14 +919,20 @@ def memory_consolidate(payload: ConsolidateRequest, background_tasks: Background
             state["qdrant_client"], state["embed_model"], state["llm"],
             payload.session_id,
         )
+        _audit("consolidate_session", True, session_id=payload.session_id, status="scheduled")
         return {"status": "scheduled", "session_id": payload.session_id}
+    if not ratelimit.allow("consolidate_session"):
+        _audit("consolidate_session", False, session_id=payload.session_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many consolidate calls in a short window")
     try:
-        return consolidation.consolidate_session(
+        result = consolidation.consolidate_session(
             state["qdrant_client"], state["embed_model"], state.get("llm"),
             payload.session_id,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit("consolidate_session", True, session_id=payload.session_id, facts_saved=len(result.get("facts", [])))
+    return result
 
 
 @app.get("/memory/pending-consolidation")
@@ -702,7 +943,12 @@ def pending_consolidation():
 @app.post("/memory/consolidate-pending")
 def consolidate_pending(background_tasks: BackgroundTasks):
     """Debounced catch-up sweep over every pending session. Called by the
-    on_session_start hook when Hermes Desktop opens a chat; returns fast."""
+    on_session_start hook when Hermes Desktop opens a chat; returns fast.
+    Always background — same never-error contract as /memory/consolidate's
+    background path, so a rate-limited sweep is skipped, not a 429; the
+    debounce (CONSOLIDATION_SWEEP_DEBOUNCE) already keeps this infrequent."""
+    if not ratelimit.allow("consolidate_session"):
+        return {"status": "skipped", "reason": "rate_limited"}
     background_tasks.add_task(scheduler.run_sweep_if_due, state)
     return {"status": "scheduled"}
 
@@ -747,7 +993,12 @@ def memory_list_facts(
 
 @app.delete("/memory/facts/{fact_id}")
 def memory_delete_fact(fact_id: str):
-    if not memories.delete_fact(state["qdrant_client"], fact_id):
+    if not ratelimit.allow("forget_memory"):
+        _audit("forget_memory", False, memory_id=fact_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many /memory/facts delete calls in a short window")
+    deleted = memories.delete_fact(state["qdrant_client"], fact_id)
+    _audit("forget_memory", deleted, memory_id=fact_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="fact not found")
     return {"status": "deleted", "id": fact_id}
 
@@ -927,8 +1178,16 @@ def session_history(session_id: str):
 
 
 @app.delete("/sessions/{session_id}")
-def session_delete(session_id: str):
+def session_delete(session_id: str, confirm: bool = False):
+    """Requires ?confirm=true — same guard as the forget_session MCP tool."""
+    if not confirm:
+        _audit("forget_session", False, session_id=session_id, reason="no_confirm")
+        raise HTTPException(status_code=400, detail="confirm=true is required to delete a session")
+    if not ratelimit.allow("forget_session"):
+        _audit("forget_session", False, session_id=session_id, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many session delete calls in a short window")
     deleted = memory_store.delete_session(state["qdrant_client"], session_id)
+    _audit("forget_session", bool(deleted), session_id=session_id, messages_deleted=deleted)
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
     return {"status": "deleted", "session_id": session_id, "messages_deleted": deleted}
@@ -939,13 +1198,16 @@ def memory_wipe_all(confirm: str = ""):
     """Full reset. Requires ?confirm=DELETE%20ALL — same guard as the
     forget_everything MCP tool."""
     if confirm != "DELETE ALL":
+        _audit("forget_everything", False, reason="no_confirm")
         raise HTTPException(status_code=400, detail='confirm must be "DELETE ALL"')
+    if not ratelimit.allow("forget_everything"):
+        _audit("forget_everything", False, reason="rate_limited")
+        raise HTTPException(status_code=429, detail="too many wipe-all calls in a short window")
     client = state["qdrant_client"]
-    return {
-        "status": "wiped",
-        "messages_deleted": memory_store.delete_all_history(client),
-        "facts_deleted": memories.delete_all_facts(client),
-    }
+    turns = memory_store.delete_all_history(client)
+    facts = memories.delete_all_facts(client)
+    _audit("forget_everything", True, messages_deleted=turns, facts_deleted=facts)
+    return {"status": "wiped", "messages_deleted": turns, "facts_deleted": facts}
 
 
 # ---------------------------------------------------------------------------
@@ -982,19 +1244,13 @@ def memory_import(bundle: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-# ---------------------------------------------------------------------------
-# Memory browser UI (read-only, single self-contained page)
-# ---------------------------------------------------------------------------
-from fastapi.responses import HTMLResponse  # noqa: E402
-
-_UI_PATH = Path(__file__).parent / "ui.html"
-
-
 @app.get("/ui", response_class=HTMLResponse)
 def ui():
-    # no-store: the page is tiny and local; stale cached copies after an
-    # image rebuild are far more confusing than the re-download is costly.
-    return HTMLResponse(_UI_PATH.read_text(), headers={"Cache-Control": "no-store"})
+    # Browser navigation uses Basic auth (the middleware prompts for it), and
+    # the browser carries the authenticated same-origin credentials for the
+    # page's fetch() calls. Never embed the API key in HTML.
+    html = (_APP_DIR / "ui.html").read_text()
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 # MCP over Streamable HTTP. Mounted last so FastAPI's own routes win; the MCP

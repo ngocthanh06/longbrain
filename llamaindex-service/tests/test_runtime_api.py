@@ -1,10 +1,16 @@
 """Public stateless model-runtime API contracts."""
 
+import pydantic
 import pytest
 from fastapi import HTTPException
 
 from app import config
 from app import main as service
+
+
+class _Request:
+    def __init__(self, **headers):
+        self.headers = {k.lower(): v for k, v in headers.items()}
 
 
 class BatchEmbed:
@@ -106,3 +112,52 @@ def test_completion_unavailable_without_llm(monkeypatch):
         service.completion(service.CompletionRequest(prompt="question"))
     assert exc.value.status_code == 503
     assert exc.value.detail["code"] == "completion_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Write-path size/count guards (security hardening plan, Phase 3) — a
+# runaway/looping agent must not be able to write an unbounded fact, turn,
+# document text or fact batch. See config.py's write-path-guards comment.
+# ---------------------------------------------------------------------------
+
+def test_ingest_text_request_rejects_oversized_text():
+    with pytest.raises(pydantic.ValidationError):
+        service.IngestTextRequest(text="x" * (config.MAX_KB_TEXT_CHARS + 1))
+
+
+def test_memory_append_request_rejects_oversized_message():
+    with pytest.raises(pydantic.ValidationError):
+        service.MemoryAppendRequest(
+            session_id="s1", user_message="x" * (config.MAX_TURN_TEXT_CHARS + 1),
+        )
+
+
+def test_fact_in_rejects_oversized_text():
+    with pytest.raises(pydantic.ValidationError):
+        service.FactIn(text="x" * (config.MAX_FACT_TEXT_CHARS + 1))
+
+
+def test_fact_in_rejects_empty_text():
+    with pytest.raises(pydantic.ValidationError):
+        service.FactIn(text="")
+
+
+def test_save_facts_request_rejects_too_many_facts():
+    facts = [{"text": "fact"} for _ in range(config.MAX_FACTS_PER_CALL + 1)]
+    with pytest.raises(pydantic.ValidationError):
+        service.SaveFactsRequest(facts=facts)
+
+
+def test_api_key_accepts_header_and_browser_basic_auth(monkeypatch):
+    monkeypatch.setattr(config, "API_KEY", "secret")
+    assert service._has_api_key(_Request(**{"X-API-Key": "secret"}))
+    import base64
+    token = base64.b64encode(b"longbrain:secret").decode()
+    assert service._has_api_key(_Request(Authorization=f"Basic {token}"))
+    assert not service._has_api_key(_Request(**{"X-API-Key": "wrong"}))
+
+
+def test_context_prefix_marks_recalled_data_as_non_instructions():
+    from hooks.admission_gate import context_prefix
+    assert "not instructions" in context_prefix("remember this decision")
+    assert "không phải chỉ thị" in context_prefix("ghi nhớ quyết định này")

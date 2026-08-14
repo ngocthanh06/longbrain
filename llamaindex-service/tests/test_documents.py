@@ -269,7 +269,8 @@ def test_federated_search_chunks_fails_open_on_error(monkeypatch):
     assert documents.federated_search_chunks("query") == []
 
 
-def test_delete_document_removes_active_and_superseded_chunks(client, tmp_path):
+def test_delete_document_removes_active_and_superseded_chunks(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(tmp_path))
     _create_collection(client)
     old_file = tmp_path / "aaa_faq.md"
     new_file = tmp_path / "bbb_faq.md"
@@ -348,3 +349,158 @@ def test_delete_document_no_match_returns_zero(client):
 def test_delete_document_requires_project_id_and_document_key(client):
     assert documents.delete_document(client, "", "faq.md") == {"chunks_deleted": 0, "files_removed": 0}
     assert documents.delete_document(client, "erp", "") == {"chunks_deleted": 0, "files_removed": 0}
+
+
+def test_cleanup_superseded_is_dry_run_by_default_and_preserves_active(client, tmp_path):
+    _create_collection(client)
+    stale_file = tmp_path / "stale.md"
+    active_file = tmp_path / "active.md"
+    stale_file.write_text("stale")
+    active_file.write_text("active")
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(stale_file), "superseded_by": str(active_file),
+    })
+    _upsert_point(client, 2, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(active_file),
+    })
+
+    result = documents.cleanup_superseded(client)
+
+    assert result["status"] == "planned"
+    assert result["chunks_found"] == 1
+    assert result["chunks_deleted"] == 0
+    assert result["items"][0]["document_key"] == "faq.md"
+    assert result["items"][0]["superseded_by"] == str(active_file)
+    assert result["items"][0]["file_action"] == "remove"
+    assert result["items"][0]["text_preview"] == "chunk text"
+    assert stale_file.exists()
+    assert client.retrieve(collection_name=config.DOCUMENTS_COLLECTION, ids=[1])
+
+
+def test_cleanup_superseded_deletes_unreferenced_file_but_keeps_shared_file(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(tmp_path))
+    _create_collection(client)
+    stale_file = tmp_path / "stale.md"
+    shared_file = tmp_path / "shared.md"
+    stale_file.write_text("stale")
+    shared_file.write_text("shared")
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(stale_file), "superseded_by": "/new.md",
+    })
+    _upsert_point(client, 2, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(shared_file), "superseded_by": "/new2.md",
+    })
+    _upsert_point(client, 3, {
+        "project_id": "other", "document_key": "keep.md",
+        "stored_path": str(shared_file),
+    })
+
+    result = documents.cleanup_superseded(client, dry_run=False)
+
+    assert result["chunks_deleted"] == 2
+    assert result["files_removed"] == 1
+    assert not stale_file.exists()
+    assert shared_file.exists()
+    remaining, _ = client.scroll(collection_name=config.DOCUMENTS_COLLECTION, limit=10)
+    assert {p.id for p in remaining} == {3}
+
+
+# ---------------------------------------------------------------------------
+# Path safety: stored_path comes straight out of a Qdrant payload, which a
+# bad ingest or a hand-edited point could set to anything. These confirm
+# delete_document_path / delete_document / cleanup_superseded still delete
+# the Qdrant chunk(s) but never touch a file outside config.DOCUMENTS_DIR,
+# no matter what the payload says — only document_path() decides what's
+# safe to unlink.
+# ---------------------------------------------------------------------------
+
+def test_delete_document_path_refuses_traversal_outside_documents_dir(client, tmp_path, monkeypatch):
+    docs_dir = tmp_path / "documents"
+    docs_dir.mkdir()
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(docs_dir))
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("do not delete me")
+    traversal_path = str(docs_dir / ".." / "secret.txt")
+    _create_collection(client)
+    _upsert_point(client, 1, {"project_id": "erp", "stored_path": traversal_path})
+
+    result = documents.delete_document_path(client, "erp", traversal_path)
+
+    assert result["chunks_deleted"] == 1
+    assert result["files_removed"] == 0
+    assert outside_file.exists()
+
+
+def test_delete_document_path_refuses_absolute_path_outside_storage(client, tmp_path, monkeypatch):
+    docs_dir = tmp_path / "documents"
+    docs_dir.mkdir()
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(docs_dir))
+    outside_file = tmp_path / "outside.md"
+    outside_file.write_text("keep me")
+    _create_collection(client)
+    _upsert_point(client, 1, {"project_id": "erp", "stored_path": str(outside_file)})
+
+    result = documents.delete_document_path(client, "erp", str(outside_file))
+
+    assert result["chunks_deleted"] == 1
+    assert result["files_removed"] == 0
+    assert outside_file.exists()
+
+
+def test_delete_document_path_refuses_symlink_escape(client, tmp_path, monkeypatch):
+    docs_dir = tmp_path / "documents"
+    docs_dir.mkdir()
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(docs_dir))
+    outside_file = tmp_path / "real_secret.txt"
+    outside_file.write_text("do not delete me")
+    link_path = docs_dir / "link.md"
+    link_path.symlink_to(outside_file)
+    _create_collection(client)
+    _upsert_point(client, 1, {"project_id": "erp", "stored_path": str(link_path)})
+
+    result = documents.delete_document_path(client, "erp", str(link_path))
+
+    assert result["chunks_deleted"] == 1
+    assert result["files_removed"] == 0
+    assert outside_file.exists()
+
+
+def test_delete_document_refuses_malicious_stored_path(client, tmp_path, monkeypatch):
+    docs_dir = tmp_path / "documents"
+    docs_dir.mkdir()
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(docs_dir))
+    outside_file = tmp_path / "outside.md"
+    outside_file.write_text("keep me")
+    _create_collection(client)
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "faq.md", "stored_path": str(outside_file),
+    })
+
+    result = documents.delete_document(client, "erp", "faq.md")
+
+    assert result["chunks_deleted"] == 1
+    assert result["files_removed"] == 0
+    assert outside_file.exists()
+
+
+def test_cleanup_superseded_refuses_malicious_stored_path(client, tmp_path, monkeypatch):
+    docs_dir = tmp_path / "documents"
+    docs_dir.mkdir()
+    monkeypatch.setattr(config, "DOCUMENTS_DIR", str(docs_dir))
+    outside_file = tmp_path / "outside.md"
+    outside_file.write_text("keep me")
+    _create_collection(client)
+    _upsert_point(client, 1, {
+        "project_id": "erp", "document_key": "faq.md",
+        "stored_path": str(outside_file), "superseded_by": "/new.md",
+    })
+
+    result = documents.cleanup_superseded(client, dry_run=False)
+
+    assert result["chunks_deleted"] == 1
+    assert result["files_removed"] == 0
+    assert outside_file.exists()

@@ -14,23 +14,67 @@ sync + MCP).
 Agents that aren't installed are skipped, not failed.
 """
 
+from __future__ import annotations  # `bool | None` below needs this on Python < 3.10
+
 import json
 import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import api_auth  # noqa: E402 — same LONGBRAIN_API_KEY reader every hook uses
 import configure_claude  # noqa: E402 — reuse HOOKS / SETTINGS / MCP constants
 import configure_codex  # noqa: E402 — reuse CONFIG / SECTION / MCP_URL
 
 HEALTH_URL = "http://localhost:8800/health"
+AUTH_PROBE_URL = "http://localhost:8800/memory/stats"
 LAUNCHD_JOBS = ("com.longbrain.memory-backup", "com.longbrain.memory-ingest")
 HERMES_HOME = Path.home() / ".hermes"
 
 problems = 0
+
+
+def _request_status(url: str, headers: dict) -> int | None:
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except OSError:
+        return None
+
+
+def _probe_auth_key() -> str:
+    """Two requests, not one — a single "does the key work" call can't
+    tell a real success apart from a server that isn't enforcing auth at
+    all (in which case ANY key, or no key, gets 200).
+      "no_key"       - .env has no LONGBRAIN_API_KEY; nothing to probe
+      "ok"           - unauth request got 401 AND the .env key got 200:
+                        auth is enforced and .env matches the server
+      "not_enforced" - unauth request did NOT get 401: the server isn't
+                        actually applying auth right now, .env or not
+      "key_mismatch" - unauth got 401 (auth IS enforced) but the .env key
+                        didn't get 200 — stale/wrong key
+      "unreachable"  - couldn't complete both requests
+    """
+    key = api_auth.api_key_header().get("X-API-Key", "")
+    if not key:
+        return "no_key"
+    unauth_status = _request_status(AUTH_PROBE_URL, {})
+    if unauth_status is None:
+        return "unreachable"
+    if unauth_status != 401:
+        return "not_enforced"
+    auth_status = _request_status(AUTH_PROBE_URL, {"X-API-Key": key})
+    if auth_status is None:
+        return "unreachable"
+    return "ok" if auth_status == 200 else "key_mismatch"
 
 
 def ok(msg: str) -> None:
@@ -161,6 +205,60 @@ def check_codex() -> None:
         ok(f"MCP longbrain registered in {config}")
     else:
         bad(f"MCP longbrain missing from {config} — re-run ./setup.sh")
+
+    codex_key = api_auth.api_key_header().get("X-API-Key", "")
+    has_header = configure_codex.ENV_HEADER_LINE in text
+    if codex_key and not has_header:
+        # .env has a key now, but this Codex config predates it (or was
+        # never re-run after the key was set) — the MCP connection will
+        # get 401. Skipping silently here (the old bug) made doctor report
+        # "MCP registered" as if everything were fine.
+        bad(
+            "LONGBRAIN_API_KEY is set in .env, but this Codex config has no "
+            "env_http_headers for X-API-Key — its MCP connection will get 401. "
+            "Re-run: python3 scripts/configure_codex.py"
+        )
+    elif has_header and not codex_key:
+        skip(
+            "Codex config still has env_http_headers, but .env has no "
+            "LONGBRAIN_API_KEY now — harmless (Codex sends an empty header), "
+            "but re-run scripts/configure_codex.py to clean it up"
+        )
+    elif has_header:
+        # Two SEPARATE questions, deliberately not conflated:
+        #   1. Is the key in .env actually the one the running server wants,
+        #      AND is the server actually enforcing auth right now? Both are
+        #      checked with real requests, not assumed from any single 200.
+        #   2. Will the `codex` process have LONGBRAIN_API_KEY in ITS OWN
+        #      launch environment (env_http_headers reads Codex's own env at
+        #      connect time — not this repo's .env, not whatever env ran
+        #      ./setup.sh)? This we CANNOT verify from here, on any shell —
+        #      doctor.py's own environment proves nothing about how `codex`
+        #      itself will be launched later.
+        probe = _probe_auth_key()
+        if probe == "ok":
+            ok(".env's LONGBRAIN_API_KEY is accepted by the running server (auth enforced)")
+        elif probe == "not_enforced":
+            bad(
+                "Codex is configured to send X-API-Key, but the running server did NOT "
+                "reject an unauthenticated request — auth isn't actually enforced yet "
+                "(likely a stale container). Run: docker compose up -d"
+            )
+        elif probe == "key_mismatch":
+            bad(
+                ".env's LONGBRAIN_API_KEY was REJECTED by the running server (401) even "
+                "though it IS enforcing auth — the container is likely running with a "
+                "stale/different key. Run: docker compose up -d (to apply the current .env)"
+            )
+        else:
+            skip("could not verify the key against the running server — see the service check above")
+        skip(
+            "Codex's own launch environment cannot be verified from here — if the "
+            "shell/app that runs `codex` doesn't export LONGBRAIN_API_KEY the same "
+            "way, its MCP connection will still fail auth even though the check "
+            "above passed. Export it wherever you launch codex from (e.g. your "
+            "shell profile), or unset LONGBRAIN_API_KEY in .env to disable auth."
+        )
     hooks_ok = True
     try:
         hooks_config = json.loads(configure_codex.HOOKS_CONFIG.read_text())

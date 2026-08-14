@@ -23,9 +23,10 @@ Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
                    mcp__longbrain__* tools over its own built-in
                    file-based auto-memory when both are available.
 
-No API key is needed anywhere in this path: Claude Code runs on its own
-login, and consolidation either uses the service-side LLM or the
-consolidate_session MCP tool (the agent's own model does the distilling).
+Claude Code runs on its own login — no LLM API key is needed for this path.
+If LONGBRAIN_API_KEY is set in .env (optional shared-secret auth, disabled
+by default), it's attached to the MCP registration as an X-API-Key header;
+the hooks in hooks/claude/ pick it up the same way via hooks/api_auth.py.
 
 Exit code 0 = fully wired; 1 = something needs attention (printed).
 Hooks are snapshotted at session start — restart Claude Code sessions to
@@ -40,12 +41,20 @@ import sys
 import time
 from pathlib import Path
 
+# Use the same dotenv-aware reader as hooks and operator scripts.  This keeps
+# direct invocations of configure_claude.py (outside setup.sh, which sources
+# .env) from silently registering an unauthenticated MCP connection.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from api_auth import _read_key  # noqa: E402
+
 SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
 REPO = Path(__file__).resolve().parent.parent
 MCP_NAME = "longbrain"
 MCP_NAME_LEGACY = "hermes-memory"  # pre-rename installs; deregistered on sight
 MCP_URL = "http://localhost:8800/mcp"
+# Empty (default) = the service's own auth is disabled too; matches it.
+API_KEY = _read_key()
 
 MARKER_START = "<!-- longbrain:memory-priority:start (auto-managed by longbrain setup, do not edit inside) -->"
 MARKER_END = "<!-- longbrain:memory-priority:end -->"
@@ -201,18 +210,29 @@ def register_mcp() -> None:
         else:
             fail(f"could not remove legacy MCP {MCP_NAME_LEGACY}: "
                  f"{(removed.stderr or removed.stdout).strip()}")
+    header_args = ["--header", f"X-API-Key: {API_KEY}"] if API_KEY else []
     probe = subprocess.run(
         [claude, "mcp", "get", MCP_NAME], capture_output=True, text=True, timeout=30
     )
     if probe.returncode == 0:
-        note(f"MCP {MCP_NAME} already registered")
-        return
+        if not API_KEY:
+            note(f"MCP {MCP_NAME} already registered")
+            return
+        # `claude mcp get` doesn't expose whether a header is already set, so
+        # when auth is enabled, re-register unconditionally to guarantee the
+        # current key is attached (no-op cost: same URL, just re-adds).
+        subprocess.run(
+            [claude, "mcp", "remove", "--scope", "user", MCP_NAME],
+            capture_output=True, text=True, timeout=30,
+        )
     add = subprocess.run(
-        [claude, "mcp", "add", "--scope", "user", "--transport", "http", MCP_NAME, MCP_URL],
+        [claude, "mcp", "add", "--scope", "user", "--transport", "http",
+         *header_args, MCP_NAME, MCP_URL],
         capture_output=True, text=True, timeout=30,
     )
     if add.returncode == 0:
-        note(f"registered MCP {MCP_NAME} -> {MCP_URL} (user scope)")
+        note(f"registered MCP {MCP_NAME} -> {MCP_URL} (user scope)"
+             + (", with X-API-Key header" if API_KEY else ""))
     else:
         fail(f"claude mcp add failed: {(add.stderr or add.stdout).strip()}")
 

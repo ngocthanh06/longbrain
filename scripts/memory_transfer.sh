@@ -10,6 +10,12 @@ set -euo pipefail
 
 SERVICE_URL="${MEMORY_SERVICE_URL:-http://localhost:8800}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Read through hooks/api_auth.py, not process env directly: a fresh
+# terminal that hasn't sourced .env would otherwise see an empty key even
+# when .env has one configured. Empty (default) = auth disabled; matches it.
+API_KEY="$(python3 "$ROOT/hooks/api_auth.py")"
+AUTH_HEADER=()
+[[ -n "$API_KEY" ]] && AUTH_HEADER=(-H "X-API-Key: $API_KEY")
 
 usage() { echo "usage: $0 export [file.json] | import <file.json>" >&2; exit 1; }
 [ $# -ge 1 ] || usage
@@ -23,7 +29,7 @@ case "$1" in
   export)
     out="${2:-$ROOT/backups/memory-export-$(date +%Y%m%d-%H%M%S).json}"
     mkdir -p "$(dirname "$out")"
-    curl -fsS "$SERVICE_URL/memory/export" -o "$out"
+    curl -fsS ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "$SERVICE_URL/memory/export" -o "$out"
     python3 -c "
 import json, sys
 c = json.load(open(sys.argv[1]))['counts']
@@ -35,6 +41,7 @@ print(f\"exported {c['facts']} facts, {c['turns']} turns, {c['documents']} docum
     [ $# -ge 2 ] || usage
     [ -f "$2" ] || { echo "ERROR: file not found: $2" >&2; exit 1; }
     curl -fsS -X POST "$SERVICE_URL/memory/import" \
+      ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
       -H "Content-Type: application/json" --data-binary "@$2" | python3 -m json.tool
     ;;
   *) usage ;;

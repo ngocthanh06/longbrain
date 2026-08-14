@@ -13,6 +13,9 @@ import os
 import sys
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from api_auth import api_key_header  # noqa: E402
+
 URL = os.environ.get(
     "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
 ) + "/memory/consolidate-pending"
@@ -20,9 +23,12 @@ URL = os.environ.get(
 
 def main():
     sys.stdin.read()  # drain payload; content not needed
-    request = urllib.request.Request(URL, data=b"{}",
-                                     headers={"Content-Type": "application/json"},
-                                     method="POST")
+    request = urllib.request.Request(
+        URL,
+        data=b"{}",
+        headers={"Content-Type": "application/json", **api_key_header()},
+        method="POST",
+    )
     try:
         urllib.request.urlopen(request, timeout=5)
     except Exception:

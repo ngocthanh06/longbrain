@@ -35,18 +35,26 @@ import time
 import urllib.request
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "hooks"))
+from api_auth import api_key_header  # noqa: E402
+
 MEMORY_URL = "http://localhost:8800"
 QDRANT_URL = "http://localhost:6333"
 COLLECTION = os.getenv("DOCUMENTS_COLLECTION", "longbrain_documents")
 BACKUP = Path.home() / ".hermes" / f"{COLLECTION}_reembed_backup_{time.strftime('%Y%m%d_%H%M%S')}.json"
-REPO = Path(__file__).resolve().parent.parent
 
 
 def http_json(url: str, body=None, method: str = None, timeout: float = 120.0):
     data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"}
+    # Only the memory service (not Qdrant, called with the same helper)
+    # needs the shared secret. Empty by default = matches auth disabled.
+    if url.startswith(MEMORY_URL):
+        headers.update(api_key_header())
     req = urllib.request.Request(
         url, data=data, method=method or ("POST" if data else "GET"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())

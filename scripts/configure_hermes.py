@@ -7,7 +7,9 @@ Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
                    pre_llm_call: auto-inject recall, on_session_end: trigger
                    consolidation), hooks_auto_accept: true, and the
                    longbrain MCP server (an entry under the legacy name
-                   hermes-memory is removed).
+                   hermes-memory is removed). If LONGBRAIN_API_KEY is set,
+                   attaches it as an X-API-Key header on that MCP entry
+                   (config.yaml is chmod 0600 once it holds the literal key).
 2. allowlist     — record hook consent in ~/.hermes/shell-hooks-allowlist.json
                    (Desktop has no TTY to approve interactively).
 3. serve patch   — Hermes bug: `hermes serve` (the Desktop backend) is missing
@@ -124,11 +126,31 @@ def patch_config() -> None:
         del mcp["hermes-memory"]
         changed = True
         note("removed legacy MCP entry hermes-memory")
+    # A literal `headers: {name: value}` dict on an mcp_servers.* entry IS
+    # read and attached to every real MCP connection — confirmed 2026-08-14
+    # by reading tools/mcp_tool.py's _connect_server in the checked-out
+    # hermes-agent source (HTTP MCP auth added 2026-07-16, e0e7cfa67). Only
+    # url/enabled/headers are managed here; any other keys a user added to
+    # this entry (e.g. tools:) are left untouched.
+    api_key = os.environ.get("LONGBRAIN_API_KEY", "")
     entry = mcp.get("longbrain")
-    if not (isinstance(entry, dict) and entry.get("url") == MCP_URL and entry.get("enabled")):
-        mcp["longbrain"] = {"url": MCP_URL, "enabled": True}
+    if not isinstance(entry, dict):
+        entry = {}
+    desired_headers = {"X-API-Key": api_key} if api_key else None
+    if (
+        entry.get("url") != MCP_URL
+        or not entry.get("enabled")
+        or entry.get("headers") != desired_headers
+    ):
+        entry["url"] = MCP_URL
+        entry["enabled"] = True
+        if desired_headers:
+            entry["headers"] = desired_headers
+        else:
+            entry.pop("headers", None)  # auth disabled now — drop a stale header
+        mcp["longbrain"] = entry
         changed = True
-        note("registered MCP longbrain")
+        note("registered MCP longbrain" + (", with X-API-Key header" if api_key else ""))
     else:
         note("MCP longbrain already present")
 
@@ -136,6 +158,9 @@ def patch_config() -> None:
         _backup(CONFIG)
         CONFIG.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
         note("wrote config.yaml (.bak.* backup alongside)")
+        if api_key:
+            CONFIG.chmod(0o600)
+            note("restricted config.yaml to 0600 (it now holds a literal secret)")
 
 
 # ---------------------------------------------------------------------------

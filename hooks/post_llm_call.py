@@ -23,6 +23,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from api_auth import api_key_header  # noqa: E402
+
 MEMORY_URL = os.environ.get(
     "LONGBRAIN_MEMORY_URL", os.environ.get("HERMES_MEMORY_URL", "http://localhost:8800")
 ) + "/memory/append"
@@ -210,7 +213,10 @@ def main():
     ).encode()
 
     request = urllib.request.Request(
-        MEMORY_URL, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        MEMORY_URL,
+        data=body,
+        headers={"Content-Type": "application/json", **api_key_header()},
+        method="POST",
     )
     try:
         urllib.request.urlopen(request, timeout=5)

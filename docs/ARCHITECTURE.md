@@ -272,6 +272,14 @@ vector space between two image builds.
 `search_knowledge_base` · `add_to_knowledge_base` — all search/write tools
 accept an optional `project` param.
 
+### Auth
+Optional shared-secret `X-API-Key`, off by default (`LONGBRAIN_API_KEY` in
+`.env`) — defense in depth on top of the 127.0.0.1-only bind, not the
+primary boundary. Only `GET /health` is exempt. Browser navigation to `/ui`
+uses a Basic-auth prompt with the same key, so the secret is not embedded in
+the page. See docs/API.md's Auth section for caller requirements and client
+configuration details.
+
 ## 7. Agent integration — adapters on a shared core
 
 The memory engine has no agent-specific code. Each agent gets a thin adapter:
@@ -304,6 +312,12 @@ writing another adapter, not touching the engine.
    for Desktop chats (CLI works, Desktop silently doesn't). The patch adds `"serve"`.
    ⚠️ **A Hermes update overwrites the patch — re-run `./setup.sh` after every update.**
 
+The `mcp_servers.longbrain` entry is given an `X-API-Key` header when
+`LONGBRAIN_API_KEY` is set. Hermes Desktop's current MCP client reads the
+literal `headers` mapping from `config.yaml`; `scripts/configure_hermes.py`
+also restricts that file to mode `0600` while it contains the key. The four
+hooks use the same shared dotenv-aware reader in `hooks/api_auth.py`.
+
 ### 7b. Claude Code
 
 `setup.sh` → `scripts/configure_claude.py` (idempotent, skipped if the `claude`
@@ -316,14 +330,19 @@ CLI isn't found):
    `SessionEnd` (consolidate), `SessionStart` (catch-up sweep, no output —
    `UserPromptSubmit` already owns context injection).
 2. **MCP registration**: `claude mcp add --scope user --transport http
-   longbrain http://localhost:8800/mcp` — available in every project.
+   longbrain http://localhost:8800/mcp` — available in every project. If
+   `LONGBRAIN_API_KEY` is set, `--header "X-API-Key: ..."` is attached too
+   (re-registered on every setup.sh run so a changed key stays in sync,
+   since `claude mcp get` doesn't expose whether a header is already set).
 3. **Optional `~/.claude/CLAUDE.md` block** (consent-gated, interactive only):
    tells Claude to prefer the `mcp__longbrain__*` tools over its own
    built-in file-based auto-memory when both are available.
 
-**No API key anywhere on this path** — Claude Code runs on its own
+**No LLM API key needed on this path** — Claude Code runs on its own
 subscription login; consolidation uses the service-side LLM or the
-`consolidate_session` MCP tool (the agent's own model distills).
+`consolidate_session` MCP tool (the agent's own model distills). The
+optional `LONGBRAIN_API_KEY` shared secret (see §6 Auth) is unrelated and
+covered above.
 
 ### 7c. Codex
 
@@ -331,7 +350,11 @@ subscription login; consolidation uses the service-side LLM or the
 not installed):
 
 1. **MCP registration**: `[mcp_servers.longbrain]` in
-   `~/.codex/config.toml`, pointing at `http://localhost:8800/mcp`.
+   `~/.codex/config.toml`, pointing at `http://localhost:8800/mcp`. If
+   `LONGBRAIN_API_KEY` is set, an `env_http_headers = { "X-API-Key" =
+   "LONGBRAIN_API_KEY" }` line is added too — it names the env var Codex
+   should read the value from at connection time, so the secret itself
+   never lands in config.toml.
 2. **Official lifecycle hooks** in `~/.codex/hooks.json`:
    `SessionStart` calls `/memory/consolidate-pending`; `UserPromptSubmit`
    calls `/memory/recall` and returns bounded `additionalContext`; `Stop`

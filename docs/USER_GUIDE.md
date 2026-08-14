@@ -4,6 +4,23 @@ Everything about living with Longbrain day to day. For install, see the
 [README](../README.md); for endpoint details, the [API reference](API.md);
 for how it works inside, the [architecture](ARCHITECTURE.md).
 
+## Optional authentication
+
+Longbrain is local-only by default. To add defense-in-depth authentication,
+set a non-empty key in the repository `.env`:
+
+```dotenv
+LONGBRAIN_API_KEY=choose-a-long-random-secret
+```
+
+Then run `./setup.sh` again. It passes the key to the service and updates the
+detected Claude Code, Codex and Hermes Desktop MCP registrations. Restart open
+agent sessions afterwards. The key is not an LLM provider key; Claude Code
+still uses its normal subscription login. To disable this layer, set
+`LONGBRAIN_API_KEY=` and run setup again.
+
+For a health check and the exact REST/MCP contract, see [API.md — Auth](API.md#auth).
+
 ## How your memory works
 
 You don't operate Longbrain — you just chat. The whole lifecycle runs

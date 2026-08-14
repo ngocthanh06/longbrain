@@ -101,8 +101,36 @@ services:
       BM25_MODEL: "${BM25_MODEL:-Qdrant/bm25}"
       RETRIEVAL_TOP_K: "${RETRIEVAL_TOP_K:-4}"
       CHAT_HISTORY_MAX_MESSAGES: "${CHAT_HISTORY_MAX_MESSAGES:-200}"
+      # Write-path guards (app/config.py) — same rule as above: every .env
+      # override must be listed here or it never reaches the container.
+      MAX_FACT_TEXT_CHARS: "${MAX_FACT_TEXT_CHARS:-8000}"
+      MAX_FACTS_PER_CALL: "${MAX_FACTS_PER_CALL:-50}"
+      MAX_SESSION_SUMMARY_CHARS: "${MAX_SESSION_SUMMARY_CHARS:-2000}"
+      MAX_TURN_TEXT_CHARS: "${MAX_TURN_TEXT_CHARS:-20000}"
+      MAX_KB_TEXT_CHARS: "${MAX_KB_TEXT_CHARS:-20000}"
+      MAX_INGEST_FILE_BYTES: "${MAX_INGEST_FILE_BYTES:-52428800}"
+      MAX_INGEST_PATH_FILES: "${MAX_INGEST_PATH_FILES:-500}"
+      RATE_LIMIT_WINDOW_SECONDS: "${RATE_LIMIT_WINDOW_SECONDS:-10}"
+      RATE_LIMIT_MAX_CALLS: "${RATE_LIMIT_MAX_CALLS:-20}"
+      # Per-action rate limit tiers (app/config.py) — same rule: unlisted
+      # here means an .env override is silently ignored by the container.
+      RATE_LIMIT_APPEND_PER_MIN: "${RATE_LIMIT_APPEND_PER_MIN:-90}"
+      RATE_LIMIT_SAVE_PER_MIN: "${RATE_LIMIT_SAVE_PER_MIN:-20}"
+      RATE_LIMIT_CONSOLIDATE_PER_MIN: "${RATE_LIMIT_CONSOLIDATE_PER_MIN:-10}"
+      RATE_LIMIT_INGEST_PER_MIN: "${RATE_LIMIT_INGEST_PER_MIN:-10}"
+      RATE_LIMIT_DELETE_PER_MIN: "${RATE_LIMIT_DELETE_PER_MIN:-5}"
+      RATE_LIMIT_FULL_RESET_PER_MIN: "${RATE_LIMIT_FULL_RESET_PER_MIN:-1}"
+      # Shared-secret auth (app/config.py) — empty (default) = disabled.
+      LONGBRAIN_API_KEY: "${LONGBRAIN_API_KEY:-}"
     volumes:
       - longbrain_data:/data
+      # Keep the local app source live inside the container. Uvicorn's reload
+      # watcher below then picks up UI/API edits without a manual rebuild.
+      - ./llamaindex-service/app:/app/app
+      # Expose the project workspace at its absolute host path so the L4
+      # "Add path" action can ingest an absolute source folder.
+      - "${HERMES_AGENT_HOST_PATH:-$PWD}:${HERMES_AGENT_HOST_PATH:-$PWD}:ro"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
