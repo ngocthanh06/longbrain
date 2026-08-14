@@ -48,7 +48,7 @@ zoom keep large collections readable.
 
 ## Verified by evals, not claims
 
-- **187 tests** (pytest, run in-container) — idempotency, dedup/supersede,
+- **303 tests** (pytest, run in-container) — idempotency, dedup/supersede,
   recall filtering, hook payload parsing, adapter config patching.
 - **Recall regression eval**: 12/13 expected hits, **0 violations** (no
   irrelevant memory leaked into the context), 11,460 chars injected across
