@@ -337,8 +337,17 @@
     background: var(--surface-1); border: 1px solid var(--border);
     border-radius: 14px; box-shadow: var(--shadow); padding: 16px;
   }
+  #modalBox.wide { width: min(640px, 94vw); }
   #modalTitle { font-weight: 650; font-size: 14px; margin-bottom: 4px; }
   #modalMsg { color: var(--text-secondary); margin-bottom: 12px; }
+  #modalList {
+    display: none; flex-direction: column; gap: 0; margin-bottom: 12px;
+    max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
+  }
+  #modalList .clean-row { padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  #modalList .clean-row:last-child { border-bottom: none; }
+  #modalList .clean-row b { display: block; }
+  #modalList .clean-row small { color: var(--text-muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #modalOptions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; max-height: 220px; overflow-y: auto; }
   #modalOptions .opt {
     display: flex; align-items: center; gap: 8px; padding: 7px 10px;
@@ -712,6 +721,7 @@
   </div>
   <div class="topbar-actions">
     <button class="btn" id="exportBtn" title="Export current atlas as PNG">Snapshot</button>
+    <button class="btn" id="cleanupBtn" title="Preview and remove superseded document chunks">Cleanup</button>
     <button class="btn icon-only" id="bundleExportBtn" title="Export all memory data">⇩</button>
     <button class="btn icon-only" id="bundleImportBtn" title="Import a memory bundle">⇧</button>
   </div>
@@ -802,6 +812,7 @@
   <div id="modalBox">
     <div id="modalTitle"></div>
     <div id="modalMsg"></div>
+    <div id="modalList"></div>
     <div id="modalOptions"></div>
     <input id="modalInput" autocomplete="off">
     <div id="modalBtns">
@@ -2205,13 +2216,17 @@ function closeModal(result) {
 
 let modalMode = "slug";  // "slug" (project picker/typer) | "type" (fixed list) | "confirm" (yes/no)
 
-function openModal({ title, message, options, current, value, confirmLabel, mode = "slug", danger = false }) {
+function openModal({ title, message, options, current, value, confirmLabel, mode = "slug", danger = false, listHtml = "", wide = false }) {
   modalMode = mode;
   return new Promise(res => {
     modalResolve = res;
     $("modalOk").classList.toggle("danger", danger);
+    $("modalBox").classList.toggle("wide", wide);
     $("modalTitle").textContent = title;
     $("modalMsg").textContent = message || "";
+    const list = $("modalList");
+    list.innerHTML = listHtml || "";
+    list.style.display = listHtml ? "flex" : "none";
     const opts = $("modalOptions");
     opts.innerHTML = "";
     if (options && options.length) {
@@ -2678,6 +2693,35 @@ $("viewDocuments").onclick=()=>{setView("viewDocuments");$("documentsView").styl
 $("docsRefresh").onclick=loadDocuments; $("docsSearch").oninput=loadDocuments; $("docsProject").onchange=loadDocuments;
 $("docsImport").onclick=async()=>{const f=$("docsFile").files[0];if(!f)return toast("Choose a file first");const form=new FormData();form.append("file",f);form.append("project_id",$("docsImportProject").value||"local");const r=await fetch("/ingest/file",{method:"POST",body:form});if(!r.ok)toast(await r.text());else{toast("File imported");loadDocuments()}};
 $("docsAddPath").onclick=async()=>{const path=$("docsPath").value.trim();if(!path)return toast("Enter an absolute path");const r=await fetch("/documents/path",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path,project_id:$("docsPathProject").value||"local"})});if(!r.ok)toast(await r.text());else{toast("Path imported");$("docsPath").value="";loadDocuments()}};
+$("cleanupBtn").onclick=async()=>{
+  const planResp=await fetch("/maintenance/cleanup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dry_run:true})});
+  if(!planResp.ok)return toast(await planResp.text());
+  const plan=await planResp.json();
+  if(!plan.chunks_found)return toast("Nothing to clean up — no superseded chunks found.");
+  const rowsHtml=plan.items.map(it=>{
+    const label=it.document_key||it.source||it.stored_path||"(untitled)";
+    const meta=[it.project_id, it.file_action==="remove"?"file will be removed":"file kept (referenced elsewhere)"].filter(Boolean).join(" · ");
+    return `<div class="clean-row"><b>${escapeHtml(label)}</b><small>${escapeHtml(meta)}${it.text_preview?" — "+escapeHtml(it.text_preview):""}</small></div>`;
+  }).join("");
+  const truncatedNote=plan.truncated?`<div class="clean-row"><small>…and more not shown (limit reached)</small></div>`:"";
+  const removePaths=new Set(plan.items.filter(it=>it.file_action==="remove").map(it=>it.stored_path).filter(Boolean));
+  const keepPaths=new Set(plan.items.filter(it=>it.file_action!=="remove").map(it=>it.stored_path).filter(Boolean));
+  const ok=await openModal({
+    title: "Cleanup superseded documents",
+    message: `This cleanup scans all projects and permanently removes superseded document chunks — review the list below before continuing. ${plan.chunks_found} chunk(s) will be deleted: ${removePaths.size} file(s) will be removed and ${keepPaths.size} file(s) kept because they're still referenced elsewhere. This cannot be undone.`,
+    listHtml: rowsHtml + truncatedNote,
+    wide: true,
+    mode: "confirm",
+    confirmLabel: "Delete permanently",
+    danger: true,
+  });
+  if(!ok)return;
+  const r=await fetch("/maintenance/cleanup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dry_run:false,confirm:"CLEANUP SUPERSEDED"})});
+  if(!r.ok)return toast(await r.text());
+  const result=await r.json();
+  toast(`Cleaned up ${result.chunks_deleted} chunk(s), removed ${result.files_removed} file(s).`);
+  loadDocuments();
+};
 $("viewGraph").onclick = async () => {
   $("list").style.display = "none";
   setView("viewGraph");
