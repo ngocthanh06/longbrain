@@ -2,6 +2,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))  # dotted `hooks.xxx` imports (e.g. hooks.admission_gate);
+# `python -m pytest` from the repo root adds this automatically via cwd, but
+# CI/containers invoke pytest with a different cwd (working-directory:
+# llamaindex-service), where it's otherwise missing — masked locally by luck.
 sys.path.insert(0, str(REPO_ROOT / "llamaindex-service"))  # the `app` package
 sys.path.insert(0, str(REPO_ROOT / "hooks"))  # hook scripts (stdlib-only)
 sys.path.insert(0, str(REPO_ROOT / "hooks" / "claude"))  # Claude Code adapter hooks
