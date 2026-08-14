@@ -226,8 +226,11 @@ def register_mcp() -> None:
             capture_output=True, text=True, timeout=30,
         )
     add = subprocess.run(
+        # --header is a variadic option (-H, --header <header...>); placed
+        # before the positional name/url args it swallows them too, causing
+        # "error: missing required argument 'name'" — must come last.
         [claude, "mcp", "add", "--scope", "user", "--transport", "http",
-         *header_args, MCP_NAME, MCP_URL],
+         MCP_NAME, MCP_URL, *header_args],
         capture_output=True, text=True, timeout=30,
     )
     if add.returncode == 0:

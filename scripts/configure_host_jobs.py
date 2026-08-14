@@ -86,6 +86,18 @@ def install_ingest_watcher_agent() -> bool:
     )
 
 
+def install_codex_env_agent() -> bool:
+    """Re-sync LONGBRAIN_API_KEY into launchd's env at every login — Codex's
+    env_http_headers reads it from ITS OWN launch environment, which a plain
+    `launchctl setenv` (run once, e.g. by configure_codex.py) does not
+    survive logout/reboot. Only relevant when Codex is present; the caller
+    (configure_codex.py) gates on that."""
+    print("==> Codex launch-environment sync (launchd, on login)")
+    return _install_launchd_agent(
+        "com.longbrain.codex-env.plist.template", "com.longbrain.codex-env.plist",
+    )
+
+
 def main() -> int:
     ok = install_backup_agent()
     ok = install_ingest_watcher_agent() and ok

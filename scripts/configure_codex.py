@@ -29,6 +29,10 @@ from pathlib import Path
 from typing import Optional
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # noqa: E402
+from configure_host_jobs import install_codex_env_agent  # noqa: E402
+from sync_codex_launch_env import sync as sync_launch_env  # noqa: E402
+
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", "")) if os.environ.get("CODEX_HOME") \
     else Path.home() / ".codex"
 CONFIG = CODEX_HOME / "config.toml"
@@ -469,10 +473,22 @@ def main() -> int:
     register_mcp()
     register_lifecycle_hooks()
     patch_global_agents()
+    sync_launch_env()  # immediate effect, doesn't wait for next login
+    install_codex_env_agent()  # keeps it in sync across logout/reboot too
     if ok_all:
         print("✓ Codex wired (lifecycle hooks + MCP + notify fallback).")
         print("  Restart Codex, run /hooks once to trust the Longbrain hooks, then "
               "finish a turn and verify with scripts/doctor.py.")
+        if API_KEY:
+            print(
+                "  NOTE: LONGBRAIN_API_KEY was just synced into launchd's environment"
+                " (launchctl setenv), which only new PROCESSES pick up — a Terminal/"
+                "iTerm window already open from before this run will NOT see it, even"
+                " in a new tab/window (those are children of the same already-running"
+                " app). Quit that terminal app entirely (Cmd+Q) and reopen it — or log"
+                " out/in — before running `codex`, otherwise its MCP connection to"
+                " Longbrain will 401."
+            )
     else:
         print("✗ finished with problems (see above)")
     return 0 if ok_all else 1

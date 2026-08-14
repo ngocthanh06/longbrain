@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.longbrain.codex-env</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__REPO__/scripts/sync_codex_launch_env.py</string>
+    </array>
+    <!-- One-shot per login: launchctl setenv doesn't persist across logout/reboot. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/codex_launch_env.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/codex_launch_env.log</string>
+</dict>
+</plist>

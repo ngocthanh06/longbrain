@@ -252,13 +252,33 @@ def check_codex() -> None:
             )
         else:
             skip("could not verify the key against the running server — see the service check above")
-        skip(
-            "Codex's own launch environment cannot be verified from here — if the "
-            "shell/app that runs `codex` doesn't export LONGBRAIN_API_KEY the same "
-            "way, its MCP connection will still fail auth even though the check "
-            "above passed. Export it wherever you launch codex from (e.g. your "
-            "shell profile), or unset LONGBRAIN_API_KEY in .env to disable auth."
-        )
+
+        # env_http_headers makes the `codex` process read LONGBRAIN_API_KEY
+        # from ITS OWN launch environment at connect time — `launchctl
+        # setenv` (synced by configure_codex.py + the codex-env LaunchAgent
+        # on every login) is what actually gets it there for GUI-launched
+        # apps like ChatGPT.app. Verify that sync actually landed, instead
+        # of just noting it can't be checked.
+        if not shutil.which("launchctl"):
+            skip("launchctl not available (not macOS) — can't verify Codex's launch environment")
+        else:
+            launch_env = subprocess.run(
+                ["launchctl", "getenv", "LONGBRAIN_API_KEY"], capture_output=True, text=True, timeout=15
+            ).stdout.strip()
+            if launch_env == codex_key:
+                ok("launchd env LONGBRAIN_API_KEY matches .env (Codex will pick it up on next launch)")
+            else:
+                bad(
+                    "launchd env LONGBRAIN_API_KEY does not match .env — Codex's MCP "
+                    "connection will 401. Re-run: python3 scripts/sync_codex_launch_env.py"
+                )
+            listed = subprocess.run(
+                ["launchctl", "list"], capture_output=True, text=True, timeout=15
+            ).stdout
+            if "com.longbrain.codex-env" in listed:
+                ok("codex-env LaunchAgent loaded (re-syncs the launchd env at every login)")
+            else:
+                bad("com.longbrain.codex-env LaunchAgent not loaded — re-run ./setup.sh")
     hooks_ok = True
     try:
         hooks_config = json.loads(configure_codex.HOOKS_CONFIG.read_text())
