@@ -202,14 +202,16 @@ def register_mcp() -> None:
         fail("`claude` CLI not found on PATH — register manually: "
              f"claude mcp add --scope user --transport http {MCP_NAME} {MCP_URL}")
         return
+    # stdin=DEVNULL on every call: install.sh runs setup with stdin=/dev/tty,
+    # which Node's kqueue can't watch on macOS (EINVAL crash in `claude`).
     # Deregister the pre-rename name first so the tools don't show up twice.
     legacy = subprocess.run(
-        [claude, "mcp", "get", MCP_NAME_LEGACY], capture_output=True, text=True, timeout=30
+        [claude, "mcp", "get", MCP_NAME_LEGACY], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL
     )
     if legacy.returncode == 0:
         removed = subprocess.run(
             [claude, "mcp", "remove", "--scope", "user", MCP_NAME_LEGACY],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
         )
         if removed.returncode == 0:
             note(f"removed legacy MCP registration {MCP_NAME_LEGACY}")
@@ -218,7 +220,7 @@ def register_mcp() -> None:
                  f"{(removed.stderr or removed.stdout).strip()}")
     header_args = ["--header", f"X-API-Key: {API_KEY}"] if API_KEY else []
     probe = subprocess.run(
-        [claude, "mcp", "get", MCP_NAME], capture_output=True, text=True, timeout=30
+        [claude, "mcp", "get", MCP_NAME], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL
     )
     if probe.returncode == 0:
         if not API_KEY:
@@ -229,7 +231,7 @@ def register_mcp() -> None:
         # current key is attached (no-op cost: same URL, just re-adds).
         subprocess.run(
             [claude, "mcp", "remove", "--scope", "user", MCP_NAME],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
         )
     add = subprocess.run(
         # --header is a variadic option (-H, --header <header...>); placed
@@ -237,7 +239,7 @@ def register_mcp() -> None:
         # "error: missing required argument 'name'" — must come last.
         [claude, "mcp", "add", "--scope", "user", "--transport", "http",
          MCP_NAME, MCP_URL, *header_args],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
     )
     if add.returncode == 0:
         note(f"registered MCP {MCP_NAME} -> {MCP_URL} (user scope)"

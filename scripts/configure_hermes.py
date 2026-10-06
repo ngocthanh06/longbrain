@@ -319,10 +319,10 @@ def sync_llm_env() -> None:
     if hermes_env.get("NVIDIA_API_KEY"):
         updates = {
             "LLM_PROVIDER": "nvidia",
-            "LLM_MODEL": "deepseek-ai/deepseek-v4-pro",
+            "LLM_MODEL": "deepseek-ai/deepseek-v4.1-flash",
             "NVIDIA_API_KEY": hermes_env["NVIDIA_API_KEY"],
         }
-        note("using NVIDIA key from ~/.hermes/.env (model: deepseek-v4-pro)")
+        note("using NVIDIA key from ~/.hermes/.env (model: deepseek-v4.1-flash)")
     elif hermes_env.get("GOOGLE_API_KEY"):
         updates = {
             "LLM_PROVIDER": "gemini",

@@ -41,11 +41,13 @@ else
 fi
 
 # Docker Compose reads .env automatically, but host-side Python configurators
-# and hooks read process environment variables. Keep both paths in sync.
-set -a
+# and hooks read process environment variables. Export only what they need:
+# exporting the whole file would hand LLM provider keys (NVIDIA_API_KEY, ...)
+# to every child process — claude, codex, hermes.
 # shellcheck disable=SC1091
-. ./.env
-set +a
+env_exports="$(set -a; . ./.env; printf 'export LONGBRAIN_API_KEY=%q DOCUMENTS_COLLECTION=%q\n' \
+  "${LONGBRAIN_API_KEY:-}" "${DOCUMENTS_COLLECTION:-longbrain_documents}")"
+eval "$env_exports"
 
 # 3. Build + up
 step "Starting containers (first run builds the image, takes a few minutes)"
