@@ -3,13 +3,15 @@
 
 Run via setup.sh (or directly). Idempotent — safe to re-run. Steps:
 
-1. settings.json — register the 4 memory hooks in ~/.claude/settings.json
+1. settings.json — register the 5 memory hooks in ~/.claude/settings.json
                    (UserPromptSubmit: auto-inject recall, Stop: write turns,
                    SessionEnd: trigger consolidation, SessionStart: catch-up
-                   sweep), and default the token-hungry Workflows feature +
-                   "ultracode" keyword trigger to off (SETTINGS_DEFAULTS —
-                   never overriding a key the user already set). Other
-                   hooks/settings are left untouched.
+                   sweep, PreToolUse: deny Edit/Write/MultiEdit until a
+                   recall tool has been called this turn), and default the
+                   token-hungry Workflows feature + "ultracode" keyword
+                   trigger to off (SETTINGS_DEFAULTS — never overriding a
+                   key the user already set). Other hooks/settings are left
+                   untouched.
 2. MCP           — register the longbrain MCP server user-scoped via
                    `claude mcp add` so the memory tools (recall, save_facts,
                    forget_about, consolidate_session, …) are available in
@@ -104,12 +106,13 @@ SETTINGS_DEFAULTS = {
     "workflowKeywordTriggerEnabled": False,
 }
 
-# Claude Code event -> (script under hooks/claude/, timeout seconds)
+# Claude Code event -> (script under hooks/claude/, timeout seconds, matcher)
 HOOKS = {
-    "UserPromptSubmit": (REPO / "hooks" / "claude" / "user_prompt_submit.py", 5),
-    "Stop": (REPO / "hooks" / "claude" / "stop.py", 15),
-    "SessionEnd": (REPO / "hooks" / "claude" / "session_end.py", 10),
-    "SessionStart": (REPO / "hooks" / "claude" / "session_start.py", 10),
+    "UserPromptSubmit": (REPO / "hooks" / "claude" / "user_prompt_submit.py", 5, None),
+    "Stop": (REPO / "hooks" / "claude" / "stop.py", 15, None),
+    "SessionEnd": (REPO / "hooks" / "claude" / "session_end.py", 10, None),
+    "SessionStart": (REPO / "hooks" / "claude" / "session_start.py", 10, None),
+    "PreToolUse": (REPO / "hooks" / "claude" / "pre_tool_use.py", 5, "Edit|Write|MultiEdit"),
 }
 
 ok_all = True
@@ -154,7 +157,7 @@ def patch_settings() -> None:
             note(f"set {key} = {json.dumps(value)} (token saver; override in settings.json if wanted)")
 
     hooks_cfg = settings.setdefault("hooks", {})
-    for event, (script, timeout) in HOOKS.items():
+    for event, (script, timeout, matcher) in HOOKS.items():
         command = hook_command(script)
         matchers = hooks_cfg.setdefault(event, [])
         already = any(
@@ -174,7 +177,10 @@ def patch_settings() -> None:
                     if not (isinstance(h, dict) and script.name in str(h.get("command", "")))
                 ]
         matchers[:] = [m for m in matchers if not isinstance(m, dict) or m.get("hooks")]
-        matchers.append({"hooks": [{"type": "command", "command": command, "timeout": timeout}]})
+        entry = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+        if matcher:
+            entry["matcher"] = matcher
+        matchers.append(entry)
         changed = True
         note(f"registered hook {event}")
 
