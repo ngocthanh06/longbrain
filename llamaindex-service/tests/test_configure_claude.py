@@ -18,7 +18,7 @@ def test_patch_settings_writes_defaults_and_hooks(tmp_path, monkeypatch):
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings["disableWorkflows"] is True
     assert settings["workflowKeywordTriggerEnabled"] is False
-    assert set(settings["hooks"]) == {"UserPromptSubmit", "Stop", "SessionEnd", "SessionStart"}
+    assert set(settings["hooks"]) == {"UserPromptSubmit", "Stop", "SessionEnd", "SessionStart", "PreToolUse"}
 
 
 def test_patch_settings_respects_explicit_user_choice(tmp_path, monkeypatch):

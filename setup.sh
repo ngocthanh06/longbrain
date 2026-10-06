@@ -124,12 +124,17 @@ step "Installing background jobs (docs/ auto-ingest + nightly backup)"
 "$HERMES_PY" scripts/configure_host_jobs.py || true
 
 # 5. Wire Hermes Desktop automatically (config + hook consent + serve patch + restart)
-if [ -d "$HOME/.hermes" ]; then
+# Each agent's wiring is `|| true`: users often run only one of Hermes /
+# Claude Code / Codex, so one agent's ✗ must not abort wiring the others.
+# Check config.yaml, not just ~/.hermes: Longbrain itself writes into
+# ~/.hermes (allowlist, SOUL.md, re-embed backups), so the bare directory
+# exists on machines that never installed Hermes Desktop.
+if [ -f "$HOME/.hermes/config.yaml" ]; then
   step "Configuring Hermes Desktop automatically"
   chmod +x hooks/post_llm_call.py 2>/dev/null || true
-  "$HERMES_PY" scripts/configure_hermes.py
+  "$HERMES_PY" scripts/configure_hermes.py || true
 else
-  step "Hermes Desktop not found (~/.hermes missing) — skipping its wiring"
+  step "Hermes Desktop not found (~/.hermes/config.yaml missing) — skipping its wiring"
 fi
 
 # 5b. Wire Claude Code, if installed (hooks + MCP; works on login, no API key)
@@ -180,7 +185,7 @@ if command -v claude >/dev/null 2>&1; then
     echo "Re-run ./setup.sh in a terminal if you want to enable this option."
   fi
   export LONGBRAIN_CONFIGURE_CLAUDE_MD
-  python3 scripts/configure_claude.py
+  python3 scripts/configure_claude.py || true
 else
   echo "Skipping Claude Code wiring — install it and re-run ./setup.sh."
 fi
@@ -188,7 +193,7 @@ fi
 # 5c. Wire Codex, if installed (official lifecycle hooks + MCP + notify fallback)
 if command -v codex >/dev/null 2>&1 || [ -d "$HOME/.codex" ]; then
   step "Configuring Codex (automatic recall/write hooks + MCP)"
-  python3 scripts/configure_codex.py
+  python3 scripts/configure_codex.py || true
 else
   step "Codex not found — skipping (any MCP client can connect manually: http://localhost:8800/mcp)"
 fi

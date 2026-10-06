@@ -11,7 +11,9 @@ been called since the last real user prompt, the edit is denied with a
 reason telling the model to call one first, then retry.
 
 Fails open on any error reading/parsing the transcript (unreadable file,
-unexpected format) — a broken gate must never make editing impossible.
+unexpected format), and when the memory service doesn't answer /health —
+the recall tools can't be called then, so denying would block editing for
+the whole session. A broken gate must never make editing impossible.
 """
 
 import json
@@ -19,7 +21,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import read_payload  # noqa: E402
+from common import get_json, read_payload  # noqa: E402
 
 GATED_TOOLS = {"Edit", "Write", "MultiEdit"}
 RECALL_TOOLS = {"mcp__longbrain__search_history", "mcp__longbrain__memory_recall"}
@@ -99,6 +101,8 @@ def main():
     transcript_path = payload.get("transcript_path") or ""
     if not transcript_path or recalled_this_turn(transcript_path):
         return
+    if get_json("/health", timeout=2.0) is None:
+        return  # service down — recall is impossible, don't lock editing
 
     print(json.dumps({
         "hookSpecificOutput": {
